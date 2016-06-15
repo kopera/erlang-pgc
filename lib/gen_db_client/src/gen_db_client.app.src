@@ -1,0 +1,11 @@
+{application, gen_db_client, [
+    {description, "Generic database client behaviour"},
+    {vsn, "0.1.0"},
+    {applications, [
+        kernel,
+        stdlib,
+        gen_connection
+    ]},
+    {modules, []},
+    {env, []}
+]}.

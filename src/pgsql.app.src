@@ -1,0 +1,17 @@
+{application, pgsql, [
+    {description, "PostgreSQL Database Driver"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        ssl,
+        gen_db_client
+    ]},
+    {mod, {pgsql_app, []}},
+    {registered, [
+        pgsql_sup
+    ]},
+    {env, []}
+]}.
