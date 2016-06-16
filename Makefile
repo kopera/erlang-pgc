@@ -11,7 +11,7 @@ develop: rebar3
 	@echo ""
 	@echo "Once you get to the Erlang shell, you can try the pgsql driver with:"
 	@echo "    application:ensure_all_started(pgsql)."
-	@echo "    pgsql_demo:main("select 1 + 1 as sum", [])."
+	@echo "    pgsql_demo:main(\"select 1 + 1 as sum\", [])."
 	@echo ""
 	@echo ""
 	@./rebar3 auto
