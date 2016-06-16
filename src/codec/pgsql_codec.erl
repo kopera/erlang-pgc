@@ -57,6 +57,7 @@ new(Parameters, Options) ->
         pgsql_codec_enum,
         pgsql_codec_float4,
         pgsql_codec_float8,
+        pgsql_codec_hstore,
         pgsql_codec_int2,
         pgsql_codec_int4,
         pgsql_codec_int8,
