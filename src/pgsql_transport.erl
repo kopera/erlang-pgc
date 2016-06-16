@@ -85,8 +85,8 @@ recv(Transport, Timeout) ->
         {incomplete, Missing, Transport1} ->
             case recv_data(Transport1, Missing, Timeout) of
                 {ok, Data} ->
-                    recv_buffered(Transport1, Data);
-                Error ->
+                    recv(buffer_append(Transport1, Data), Timeout);
+                {error, _} = Error ->
                     Error
             end
     end.
@@ -96,16 +96,21 @@ recv_buffered(#tcp_transport{buffer = Buffer} = Transport, Data) ->
     case decode_message(<<Buffer/binary, Data/binary>>) of
         {ok, Message, Rest} ->
             {ok, Message, Transport#tcp_transport{buffer = Rest}};
-        {incomplete, _} ->
-            {incomplete, Transport#tcp_transport{buffer = <<Buffer/binary, Data/binary>>}}
+        {incomplete, Missing} ->
+            {incomplete, Missing, buffer_append(Transport, Data)}
     end;
 recv_buffered(#ssl_transport{buffer = Buffer} = Transport, Data) ->
     case decode_message(<<Buffer/binary, Data/binary>>) of
         {ok, Message, Rest} ->
             {ok, Message, Transport#ssl_transport{buffer = Rest}};
         {incomplete, Missing} ->
-            {incomplete, Missing, Transport#ssl_transport{buffer = <<Buffer/binary, Data/binary>>}}
+            {incomplete, Missing, buffer_append(Transport, Data)}
     end.
+
+buffer_append(#tcp_transport{buffer = Buffer} = Transport, Data) ->
+    Transport#tcp_transport{buffer = <<Buffer/binary, Data/binary>>};
+buffer_append(#ssl_transport{buffer = Buffer} = Transport, Data) ->
+    Transport#ssl_transport{buffer = <<Buffer/binary, Data/binary>>}.
 
 close(#tcp_transport{socket = Socket}) ->
     gen_tcp:close(Socket);
