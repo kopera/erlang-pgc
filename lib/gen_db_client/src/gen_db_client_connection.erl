@@ -1,17 +1,16 @@
 -module(gen_db_client_connection).
 -export([
-    prepare/3,
-    unprepare/3,
-    execute/4,
-    query/4,
-    transaction/3
-]).
-
--export([
     start_link/2,
     stop/1,
     checkout/2,
     checkin/2
+]).
+
+-export([
+    prepare/3,
+    unprepare/3,
+    execute/4,
+    transaction/3
 ]).
 
 -behaviour(gen_connection).
@@ -60,16 +59,12 @@
     {ok, Query :: any(), NewState :: any()} |
     {error | disconnect, Info :: any(), NewState :: any()}.
 
--callback handle_execute(PreparedQuery :: any(), Params :: any(), Opts :: map(), State :: any()) ->
-    {ok, Result :: any(), NewState :: any()} |
-    {error | disconnect, Info :: any(), NewState :: any()}.
-
--callback handle_query(Query :: any(), Params :: any(), Opts :: map(), State :: any()) ->
+-callback handle_execute(Query :: any(), Params :: any(), Opts :: map(), State :: any()) ->
     {ok, Result :: any(), NewState :: any()} |
     {error | disconnect, Info :: any(), NewState :: any()}.
 
 -callback handle_unprepare(PreparedQuery :: any(), Opts :: map(), State :: any()) ->
-    {ok, Result :: any(), NewState :: any()} |
+    {ok, NewState :: any()} |
     {error | disconnect, Info :: any(), NewState :: any()}.
 
 -callback handle_info(Msg :: any(), State :: any()) ->
@@ -111,32 +106,28 @@ checkin(Conn, User) ->
     gen_connection:cast(Conn, {checkout, User}).
 
 prepare(Conn, Query, Opts) ->
-    gen_connection:call(Conn, {prepare, Query, Opts}, infinity).
+    gen_connection:call(Conn, {prepare, Query, Opts}, 5000).
 
 unprepare(Conn, PreparedQuery, Opts) ->
     gen_connection:cast(Conn, {unprepare, PreparedQuery, Opts}).
 
-execute(Conn, PreparedQuery, Params, Opts) ->
-    gen_connection:call(Conn, {execute, PreparedQuery, Params, Opts}, infinity).
-
-query(Conn, Query, Params, Opts) ->
-    gen_connection:call(Conn, {query, Query, Params, Opts}, infinity).
+execute(Conn, Query, Params, Opts) ->
+    gen_connection:call(Conn, {execute, Query, Params, Opts}, 60000).
 
 transaction(Conn, Fun, Opts) ->
-    {ok, _} = gen_connection:call(Conn, {'begin', Opts}, infinity),
+    {ok, _} = gen_connection:call(Conn, {'begin', Opts}, 5000),
     try
         R = Fun(Conn),
-        {ok, _} = gen_connection:call(Conn, {commit, Opts}, infinity),
+        {ok, _} = gen_connection:call(Conn, {commit, Opts}, 60000),
         R
     catch
         throw:Error ->
-            {ok, _} = gen_connection:call(Conn, {rollback, Opts}, infinity),
+            {ok, _} = gen_connection:call(Conn, {rollback, Opts}, 5000),
             Error;
         Class:Error ->
-            {ok, _} = gen_connection:call(Conn, {rollback, Opts}, infinity),
+            {ok, _} = gen_connection:call(Conn, {rollback, Opts}, 5000),
             erlang:raise(Class, Error, erlang:get_stacktrace())
     end.
-
 
 
 %% @hidden
@@ -168,15 +159,6 @@ handle_call({prepare, Query, Opts}, _From, #connection{mod = Mod, mod_state = St
 
 handle_call({execute, PreparedQuery, Params, Opts}, _From, #connection{mod = Mod, mod_state = State} = Connection) ->
     try Mod:handle_execute(PreparedQuery, Params, Opts, State) of
-        Result ->
-            handle_query_result(Result, Connection)
-    catch
-        throw:Result ->
-            handle_query_result(Result, Connection)
-    end;
-
-handle_call({query, Query, Params, Opts}, _From, #connection{mod = Mod, mod_state = State} = Connection) ->
-    try Mod:handle_query(Query, Params, Opts, State) of
         Result ->
             handle_query_result(Result, Connection)
     catch
@@ -230,7 +212,7 @@ handle_cast({checkin, User}, #connection{mod = Mod, mod_state = State} = Connect
     end;
 
 handle_cast({unprepare, PreparedQuery, Opts}, #connection{mod = Mod, mod_state = State} = Connection) ->
-    try Mod:unprepare(PreparedQuery, Opts, State) of
+    try Mod:handle_unprepare(PreparedQuery, Opts, State) of
         Result -> handle_async_query_result(Result, Connection)
     catch
         throw:Result -> handle_async_query_result(Result, Connection)
