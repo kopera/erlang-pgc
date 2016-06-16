@@ -1,21 +1,19 @@
--module(pgsql_protocol).
+-module(pgsql_protocol_messages).
 -export([
     encode/1,
     decode/2
 ]).
 -export_type([
-    oid/0,
     message/0,
     message_f/0,
     message_b/0,
     message_fb/0
 ]).
 
--include("pgsql_protocol.hrl").
+-include("pgsql_protocol_messages.hrl").
 -define(PROTOCOL_VERSION_MAJOR, 3).
 -define(PROTOCOL_VERSION_MINOR, 0).
 
--type oid() :: 1..4294967295.
 -type message() :: message_f() | message_b() | message_fb().
 -type message_f() :: #msg_bind{}
     | #msg_cancel_request{}

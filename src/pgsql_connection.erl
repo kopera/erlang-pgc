@@ -20,7 +20,7 @@
     disconnect/2
 ]).
 
--include("./pgsql_protocol.hrl").
+-include("./pgsql_protocol_messages.hrl").
 -define(recv_timeout, 5000).
 -record(state, {
     transport :: pgsql_transport:transport(),

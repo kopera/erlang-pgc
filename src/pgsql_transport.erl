@@ -28,10 +28,10 @@
     buffer = <<>> :: binary()
 }).
 
--opaque transport() :: #tcp_transport{} | #ssl_transport{}.
--type message() :: pgsql_protocol:message().
+-type transport() :: #tcp_transport{} | #ssl_transport{}.
+-type message() :: pgsql_protocol_messages:message().
 
--include("./pgsql_protocol.hrl").
+-include("./pgsql_protocol_messages.hrl").
 
 
 open(Host, Port, SSL, SSLOpts, Timeout) ->
@@ -141,7 +141,7 @@ decode_message(<<Code:8/integer, Size:32/integer, Available/binary>>) ->
     if
         PayloadSize =< AvailableSize ->
             <<Payload:PayloadSize/binary, Rest/binary>> = Available,
-            {ok, pgsql_protocol:decode(Code, Payload), Rest};
+            {ok, pgsql_protocol_messages:decode(Code, Payload), Rest};
         PayloadSize > AvailableSize ->
             {incomplete, PayloadSize - AvailableSize}
     end;
@@ -152,5 +152,5 @@ encode_messages(Messages) ->
     [encode_message(Message) || Message <- Messages].
 
 encode_message(Message) ->
-    {Type, Payload} = pgsql_protocol:encode(Message),
+    {Type, Payload} = pgsql_protocol_messages:encode(Message),
     [Type, <<(iolist_size(Payload) + 4):32/integer>>, Payload].
