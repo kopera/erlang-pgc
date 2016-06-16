@@ -164,9 +164,9 @@ handle_execute(#statement{name = Name, parameters = ParamTypes, fields = FieldsD
             FieldsTypes = [FieldType || #msg_row_description_field{type_oid = FieldType} <- FieldsDesc],
             {Codec, Transport} = codec_sync(State#state.transport, State#state.codec, ParamTypes ++ FieldsTypes),
             case do_execute(Transport, Name, codec_encode(ParamTypes, Params, Codec)) of
-                {done, {ok, Tag, Rows}, Transport1} ->
+                {done, {ok, _Tag, Rows}, Transport1} ->
                     DecodedRows = [codec_decode(FieldsTypes, FieldsValues, Codec) || FieldsValues <- Rows],
-                    {ok, {ok, Tag, FieldsNames, DecodedRows}, State#state{transport = Transport1, codec = Codec}};
+                    {ok, {FieldsNames, DecodedRows}, State#state{transport = Transport1, codec = Codec}};
                 {done, {error, Reason}, Transport1} ->
                     {error, Reason, State#state{transport = Transport1, codec = Codec}};
                 {disconnected, Reason} ->
