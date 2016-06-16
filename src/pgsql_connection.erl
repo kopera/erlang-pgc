@@ -209,7 +209,7 @@ disconnect(_Info, #state{transport = Transport}) ->
 codec_sync(Transport, Codec, Types) ->
     case pgsql_codec:has_types(Types, Codec) of
         true ->
-            {Transport, Codec};
+            {Codec, Transport};
         false ->
             {TypeInfos, Transport1} = pgsql_types:load(Transport),
             {pgsql_codec:update_types(TypeInfos, Codec), Transport1}
