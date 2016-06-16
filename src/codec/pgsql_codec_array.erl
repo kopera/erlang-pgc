@@ -25,8 +25,8 @@ encode(_Type, Value, _Codec, _Opts) ->
 decodes(_Opts) ->
     [<<"array_recv">>, <<"int2vectorrecv">>, <<"oidvectorrecv">>].
 
-decode(#pgsql_type_info{element = ElementOid}, Data, Codec, _Opts) ->
-    decode_array(fun (Oid, Element) when Oid =:= ElementOid ->
+decode(_Type, Data, Codec, _Opts) ->
+    decode_array(fun (Oid, Element) ->
         pgsql_codec:decode(Oid, Element, Codec)
     end, Data).
 
@@ -39,10 +39,10 @@ decode(Fun, Data) ->
 
 encode_array(ElementOid, Codec, Value) ->
     {Flags, Elements} = encode_elements(ElementOid, Codec, Value),
-    [encode_header(Value, Flags, ElementOid), Elements].
+    [encode_header(ElementOid, Flags, Value), Elements].
 
 % header
-encode_header(Value, Flags, ElementOid) ->
+encode_header(ElementOid, Flags, Value) ->
     Lengths = lengths(Value, []),
     Dims = length(Lengths),
     <<
