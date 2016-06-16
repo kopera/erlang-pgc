@@ -62,6 +62,7 @@ new(Parameters, Options) ->
         pgsql_codec_int8,
         pgsql_codec_interval,
         pgsql_codec_oid,
+        pgsql_codec_record,
         pgsql_codec_text,
         pgsql_codec_uuid,
         pgsql_codec_void
