@@ -12,7 +12,7 @@
 encodes(_Opts) ->
     [<<"record_send">>].
 
-encode(#pgsql_type_info{fields = Fields}, Value, Codec, _Opts) when is_map(Value), is_list(Fields) ->
+encode(#pgsql_type_info{fields = Fields}, Value, Codec, _Opts) when is_map(Value) ->
     encode_record(Codec, Fields, Value);
 encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
