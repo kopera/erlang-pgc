@@ -329,6 +329,8 @@ do_execute_receiving_rows(Transport, Acc) ->
             do_execute_receiving_rows(Transport1, [Values | Acc]);
         {ok, #msg_command_complete{tag = Tag}, Transport1} ->
             do_sync(Transport1, {ok, Tag, lists:reverse(Acc)});
+        {ok, #msg_empty_query_response{}, Transport1} ->
+            do_sync(Transport1, {ok, <<>>, []});
         {ok, #msg_error_response{fields = Details}, Transport1} ->
             do_sync(Transport1, {error, Details});
         {error, _} = Error ->
