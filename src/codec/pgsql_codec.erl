@@ -54,6 +54,7 @@ new(Parameters, Options) ->
         pgsql_codec_binary,
         pgsql_codec_bool,
         pgsql_codec_date,
+        pgsql_codec_datetime,
         pgsql_codec_enum,
         pgsql_codec_float4,
         pgsql_codec_float8,
