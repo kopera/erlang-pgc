@@ -8,16 +8,18 @@
     decode/4
 ]).
 
+-include("../../include/types.hrl").
 -define(year_max, 5874897).
 -define(epoch, 730485). % calendar:date_to_gregorian_days({2000, 1, 1})).
 
 encodes(_Opts) ->
     [<<"date_send">>].
 
-encode(_Type, {Year, _Month, _Day} = Date, _Codec, _Opts) when is_integer(Year), Year =< ?year_max ->
+encode(_Type, #pgsql_date{year = Year, month = Month, day = Day} = D, _Codec, _Opts) when is_integer(Year), Year =< ?year_max ->
+    Date = {Year, Month, Day},
     case calendar:valid_date(Date) of
         true -> <<(calendar:date_to_gregorian_days(Date) - ?epoch):32/signed-integer>>;
-        false -> error(badarg, [Date])
+        false -> error(badarg, [D])
     end;
 encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
@@ -26,4 +28,5 @@ decodes(_Opts) ->
     [<<"date_recv">>].
 
 decode(_Type, <<Days:32/signed-integer>>, _Codec, _Opts) ->
-    calendar:gregorian_days_to_date(Days + ?epoch).
+    {Year, Month, Day} = calendar:gregorian_days_to_date(Days + ?epoch),
+    #pgsql_date{year = Year, month = Month, day = Day}.
