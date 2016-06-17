@@ -29,3 +29,6 @@ We need timeouts, queries that hang should get automatically cancelled by sendin
 
 ### Type server?
 We use a data structure for the codec logic, might be better to use an ETS table?
+
+### Transactions
+We need to add support for transactions, including nested transactions (using savepoints).
