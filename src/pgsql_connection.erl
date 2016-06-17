@@ -28,7 +28,8 @@
 ]).
 
 -include("./pgsql_protocol_messages.hrl").
--define(recv_timeout, infinity).
+-define(recv_timeout, 5000).
+
 -record(state, {
     transport :: pgsql_transport:transport(),
     backend_key :: {pos_integer(), pos_integer()},
