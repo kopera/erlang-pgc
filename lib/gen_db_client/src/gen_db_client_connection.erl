@@ -81,11 +81,10 @@
 
 
 %% @private
--spec start_link(Mod, ConnectOpts) -> {ok, Conn} | {error, Reason} when
+-spec start_link(Mod, ConnectOpts) -> {ok, Conn} when
       Mod :: module(),
       ConnectOpts :: any(),
-      Conn :: connection(),
-      Reason :: any().
+      Conn :: connection().
 -opaque connection() :: pid().
 start_link(Mod, ConnectOpts) ->
     gen_connection:start_link(?MODULE, {Mod, ConnectOpts}, []).
@@ -105,12 +104,15 @@ checkout(Conn, User) ->
 checkin(Conn, User) ->
     gen_connection:cast(Conn, {checkout, User}).
 
+-spec prepare(connection(), any(), any()) -> {ok, any()} | {error, term()}.
 prepare(Conn, Query, Opts) ->
     gen_connection:call(Conn, {prepare, Query, Opts}, 5000).
 
+-spec unprepare(connection(), any(), any()) -> ok.
 unprepare(Conn, PreparedQuery, Opts) ->
     gen_connection:cast(Conn, {unprepare, PreparedQuery, Opts}).
 
+-spec execute(connection(), any(), any(), any()) -> {ok, any()} | {error, term()}.
 execute(Conn, Query, Params, Opts) ->
     gen_connection:call(Conn, {execute, Query, Params, Opts}, 60000).
 

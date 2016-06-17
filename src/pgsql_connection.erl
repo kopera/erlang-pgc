@@ -43,19 +43,55 @@
     fields = [] :: [#msg_row_description_field{}]
 }).
 
+-type connection() :: gen_db_client_connection:connection().
+-type query() :: iodata().
+-type prepared_query() :: #statement{}.
 
+
+-spec start_link(TransportOpts, DatabaseOpts) -> {ok, connection()} when
+    TransportOpts ::  #{
+        host => string,
+        port => inet:port_number(),
+        ssl => disable | prefer | require,
+        ssl_options => [ssl:ssl_option()],
+        connect_timeout => timeout()
+    },
+    DatabaseOpts :: #{
+        user => string,
+        password => string,
+        database => string,
+        application_name => string
+    }.
 start_link(TransportOpts, DatabaseOpts) ->
     gen_db_client_connection:start_link(?MODULE, {TransportOpts, DatabaseOpts}).
 
+-spec stop(Conn) -> ok when Conn :: connection().
 stop(Conn) ->
     gen_db_client_connection:stop(Conn).
 
+-spec prepare(Conn, Query, Opts) -> {ok, PreparedQuery} | {error, term()} when
+    Conn :: connection(),
+    Query :: query(),
+    Opts :: map(),
+    PreparedQuery :: prepared_query().
 prepare(Conn, Query, Opts) ->
     gen_db_client_connection:prepare(Conn, Query, Opts).
 
+-spec unprepare(Conn, PreparedQuery, Opts) -> ok when
+    Conn :: connection(),
+    PreparedQuery :: prepared_query(),
+    Opts :: map().
 unprepare(Conn, PreparedQuery, Opts) ->
     gen_db_client_connection:unprepare(Conn, PreparedQuery, Opts).
 
+-spec execute(Conn, Query, Params, Opts) -> {ok, {Columns, Rows}} | {error, term()} when
+    Conn :: connection(),
+    Query :: query() | prepared_query(),
+    Params :: [any()],
+    Opts :: map(),
+    Columns :: [binary()],
+    Rows :: [Row],
+    Row :: [any()].
 execute(Conn, Query, Params, Opts) ->
     gen_db_client_connection:execute(Conn, Query, Params, Opts).
 
