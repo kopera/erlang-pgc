@@ -1,6 +1,7 @@
 # erlang-pgsql
 
-PostgreSQL driver for Erlang.
+PostgreSQL driver for Erlang. This driver is heavily inspired by [postgrex](https://github.com/elixir-ecto/postgrex),
+the PostgreSQL driver for Elixir.
 
 ## Example (non-pooled)
 ```
@@ -25,3 +26,6 @@ and let it lazily read the result set from the socket.
 
 ### Timeouts
 We need timeouts, queries that hang should get automatically cancelled by sending a cancel message.
+
+### Type server?
+We use a data structure for the codec logic, might be better to use an ETS table?
