@@ -18,7 +18,7 @@ encodes(_Opts) ->
     [<<"array_send">>, <<"int2vectorsend">>, <<"oidvectorsend">>].
 
 encode(#pgsql_type_info{element = ElementOid}, Value, Codec, _Opts) when is_list(Value) ->
-    encode_array(ElementOid, Codec, Value);
+    encode_array(Codec, ElementOid, Value);
 encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
@@ -37,8 +37,8 @@ decode(Fun, Data) ->
 
 % ==== Encoding
 
-encode_array(ElementOid, Codec, Value) ->
-    {Flags, Elements} = encode_elements(ElementOid, Codec, Value),
+encode_array(Codec, ElementOid, Value) ->
+    {Flags, Elements} = encode_elements(Codec, ElementOid, Value),
     [encode_header(ElementOid, Flags, Value), Elements].
 
 % header
@@ -49,7 +49,7 @@ encode_header(ElementOid, Flags, Value) ->
         Dims:32/signed-integer,
         Flags:32/signed-integer,
         ElementOid:32/signed-integer,
-        << <<Length:32/signed-integer, 1:32/signed-integer>> || Length <- Lengths >>
+        << <<Length:32/signed-integer, 1:32/signed-integer>> || Length <- Lengths >>/binary
     >>.
 
 lengths([], []) ->
@@ -62,18 +62,18 @@ lengths(Value, Acc) ->
     lists:reverse([length(Value) | Acc]).
 
 % elements
-encode_elements(ElementOid, Codec, Elements) ->
-    encode_elements(ElementOid, Codec, 0, lists:flatten(Elements), []).
+encode_elements(Codec, ElementOid, Elements) ->
+    encode_elements(Codec, ElementOid, 0, lists:flatten(Elements), []).
 
-encode_elements(_ElementsOid, _Codec, Flags, [], Acc) ->
+encode_elements(_Codec, _ElementsOid, Flags, [], Acc) ->
     {Flags, lists:reverse(Acc)};
-encode_elements(ElementOid, Codec, Flags, [Value | Rest], Acc) ->
-    {Flags1, Element} = encode_element(ElementOid, Codec, Flags, Value),
+encode_elements(Codec, ElementOid, Flags, [Value | Rest], Acc) ->
+    {Flags1, Element} = encode_element(Codec, ElementOid, Flags, Value),
     encode_elements(Codec, ElementOid, Flags1, Rest, [Element | Acc]).
 
-encode_element(_Oid, _Codec, Flags, null) ->
+encode_element(_Codec, _Oid, Flags, null) ->
     {Flags bor 1, <<-1:32/signed-integer>>};
-encode_element(Oid, Codec, Flags, Value) ->
+encode_element(Codec, Oid, Flags, Value) ->
     Encoded = pgsql_codec:encode(Oid, Value, Codec),
     {Flags, [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded]}.
 
