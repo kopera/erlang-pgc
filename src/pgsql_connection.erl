@@ -51,17 +51,17 @@
 
 -spec start_link(TransportOpts, DatabaseOpts) -> {ok, connection()} when
     TransportOpts ::  #{
-        host => string,
+        host => string(),
         port => inet:port_number(),
         ssl => disable | prefer | require,
         ssl_options => [ssl:ssl_option()],
         connect_timeout => timeout()
     },
     DatabaseOpts :: #{
-        user => string,
-        password => string,
-        database => string,
-        application_name => string
+        user => string(),
+        password => string(),
+        database => string(),
+        application_name => string()
     }.
 start_link(TransportOpts, DatabaseOpts) ->
     gen_db_client_connection:start_link(?MODULE, {TransportOpts, DatabaseOpts}).
