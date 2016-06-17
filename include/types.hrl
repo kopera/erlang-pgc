@@ -15,7 +15,7 @@
 }).
 
 -record(pgsql_date, {
-    year :: non_neg_integer(),
+    year :: 1..5874897,
     month :: 1..12,
     day :: 1..31
 }).
