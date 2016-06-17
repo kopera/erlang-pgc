@@ -9,9 +9,10 @@
 }).
 
 -record(pgsql_interval, {
-    months = 0 :: non_neg_integer(),
-    days = 0 :: non_neg_integer(),
-    micro_seconds = 0 :: non_neg_integer()
+    months :: non_neg_integer(),
+    days :: non_neg_integer(),
+    micro_seconds :: non_neg_integer()
+}).
 
 -record(pgsql_date, {
     year :: non_neg_integer(),
