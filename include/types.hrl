@@ -19,4 +19,10 @@
     month :: 1..12,
     day :: 1..31
 }).
+
+-record(pgsql_time, {
+    hours :: 0..23,
+    minutes :: 0..59,
+    seconds :: 0..59,
+    micro_seconds :: 0..999999
 }).
