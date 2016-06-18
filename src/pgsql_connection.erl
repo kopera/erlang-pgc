@@ -126,28 +126,33 @@ unprepare(Conn, #statement{name = Name}, Opts) ->
     Row :: [any()].
 execute(Conn, Statement, Params, Opts) ->
     case gen_statem:call(Conn, {execute, Statement, Params, Opts}) of
-        {ok, Ref, FieldNames, FieldTypes, Codec} ->
+        {ok, C, Ref, FieldNames, FieldTypes, Codec} ->
             Fold = fun (Row, Rows) ->
                 [do_decode_row(FieldTypes, Row, Codec) | Rows]
             end,
-            case execute_fold(Fold, [], Ref) of
+            Mref = start_monitor(C),
+            try execute_fold(Fold, [], Ref, Mref) of
                 {ok, Rows} -> {ok, FieldNames, lists:reverse(Rows)};
                 {error, _} = Error -> Error
+            after
+                cancel_monitor(Mref)
             end;
         {error, _} = Error ->
             Error
     end.
 
-execute_fold(Fun, Acc, Ref) ->
+execute_fold(Fun, Acc, ReqRef, Mref) ->
     receive
-        {Ref, row, Row} ->
-            execute_fold(Fun, Fun(Row, Acc), Ref);
-        {Ref, fields, Fields} ->
-            execute_fold(Fun, Fun(fields, Fields, Acc), Ref);
-        {Ref, error, Reason} ->
+        {ReqRef, row, Row} ->
+            execute_fold(Fun, Fun(Row, Acc), ReqRef, Mref);
+        {ReqRef, fields, Fields} ->
+            execute_fold(Fun, Fun(fields, Fields, Acc), ReqRef, Mref);
+        {ReqRef, error, Reason} ->
             {error, Reason};
-        {Ref, done, _Tag} ->
-            {ok, Acc}
+        {ReqRef, done, _Tag} ->
+            {ok, Acc};
+        {'DOWN', Mref, _, _, Reason} ->
+            exit(Reason)
     end.
 
 do_decode_row(Types, Values, Codec) ->
@@ -348,13 +353,13 @@ ready({call, {Client, _} = From}, {execute, #statement{} = Statement, Params, Op
             FieldsTypes = [FieldType || #msg_row_description_field{type_oid = FieldType} <- FieldsDesc],
             case pgsql_codec:has_types(ParamTypes ++ FieldsTypes, Codec) of
                 true ->
-                    Monitor = erlang:monitor(process, Client),
+                    Monitor = start_monitor(Client),
                     Timeout = request_timeout(maps:get(timeout, Opts, infinity)),
                     do_execute(Transport, Name, do_encode_params(ParamTypes, Params, Codec)),
                     {next_state,
                         #executing{client = Client, monitor = Monitor, timeout = Timeout},
                         Data,
-                        {reply, From, {ok, Monitor, FieldsNames, FieldsTypes, Codec}}};
+                        {reply, From, {ok, self(), Monitor, FieldsNames, FieldsTypes, Codec}}};
                 false ->
                     ok = do_update_types(Transport),
                     {next_state, #updating_types{types = pgsql_types:new()}, Data, [postpone]}
@@ -499,35 +504,42 @@ executing(internal, #msg_data_row{values = Values}, Executing, Data) ->
 executing(internal, #msg_command_complete{tag = Tag}, Executing, Data) ->
     #executing{client = Client, monitor = Mref, timeout = Tref} = Executing,
     cancel_timeout(Tref),
+    cancel_monitor(Mref),
     Client ! {Mref, done, Tag},
     {next_state, syncing, Data};
 
 executing(internal, #msg_no_data{}, Executing, Data) ->
-    #executing{timeout = Tref} = Executing,
+    #executing{monitor = Mref, timeout = Tref} = Executing,
     cancel_timeout(Tref),
+    cancel_monitor(Mref),
     {next_state, syncing, Data};
 
 executing(internal, #msg_empty_query_response{}, Executing, Data) ->
     #executing{client = Client, monitor = Mref, timeout = Tref} = Executing,
     cancel_timeout(Tref),
+    cancel_monitor(Mref),
     Client ! {Mref, done, undefined},
     {next_state, syncing, Data};
 
 executing(internal, #msg_error_response{fields = Fields}, Executing, Data) ->
     #executing{client = Client, monitor = Mref, timeout = Tref} = Executing,
     cancel_timeout(Tref),
+    cancel_monitor(Mref),
     Client ! {Mref, error, Fields},
     {next_state, syncing, Data};
 
 executing(info, {timeout, Tref, cancel_request}, #executing{timeout = Tref} = Executing, Data) ->
     #connected{transport = Transport, backend_key = BackendKey} = Data,
     #executing{client = Client, monitor = Mref, timeout = Tref} = Executing,
+    cancel_monitor(Mref),
     Client ! {Mref, error, timeout},
     _ = do_cancel(Transport, BackendKey),
     {next_state, syncing, Data};
 
-executing(info, {'DOWN', Mref, _, _, _}, #executing{monitor = Mref}, Data) ->
+executing(info, {'DOWN', Mref, _, _, _}, #executing{monitor = Mref} = Executing, Data) ->
     #connected{transport = Transport, backend_key = BackendKey} = Data,
+    #executing{timeout = Tref} = Executing,
+    cancel_timeout(Tref),
     do_cancel(Transport, BackendKey),
     {next_state, syncing, Data};
 
@@ -588,3 +600,9 @@ cancel_timeout(undefined) ->
     ok;
 cancel_timeout(Ref) ->
     erlang:cancel_timer(Ref, [{async, true}]).
+
+start_monitor(Pid) ->
+    erlang:monitor(process, Pid).
+
+cancel_monitor(Ref) ->
+    erlang:demonitor(Ref).
