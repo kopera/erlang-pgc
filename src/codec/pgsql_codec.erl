@@ -105,9 +105,9 @@ update_types(Types, #codec{states = States} = Codec) ->
         end, #{}, Types)
     }.
 
--spec has_types(types(), codec()) -> boolean().
+-spec has_types([oid()], codec()) -> boolean().
 has_types(Types, #codec{types = Known}) ->
-    ordsets:is_subset(Types, Known).
+    ordsets:is_subset(ordsets:from_list(Types), Known).
 
 find_encoder(_, []) ->
     error;
