@@ -159,7 +159,7 @@ format_status(_, [_PDict, State, Data]) ->
     [{data, [{"State", {State, format_status_data(Data)}}]}].
 
 format_status_data(#connected{} = Data) ->
-    maps:without([transport_tags, buffer], ?record_to_map(connected, Data));
+    maps:without([transport_tags, codec, buffer], ?record_to_map(connected, Data));
 format_status_data(#disconnected{} = Data) ->
     ?record_to_map(disconnected, Data).
 
