@@ -508,9 +508,9 @@ handle_event({call, _}, _, Data) ->
 handle_event(_, _, Data) ->
     {keep_state, Data}.
 
-handle_fatal_error(_Error, #connected{options = Options, transport = Transport}) ->
+handle_fatal_error(Error, #connected{options = Options, transport = Transport}) ->
     _ = pgsql_transport:close(Transport),
-    %% TODO: log error?
+    error_logger:error_msg("~s: an error occured: ~p~n", [?MODULE, Error]),
     {next_state, disconnected, do_backoff(#disconnected{options = Options})}.
 
 %% Helpers
