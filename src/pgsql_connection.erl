@@ -16,19 +16,17 @@
     init/1,
     terminate/3,
     code_change/4,
+    format_status/2,
     handle_event/4
-]).
--export([
-    disconnected/3,
-    authenticating/3,
-    configuring/3,
-    idle/3
 ]).
 
 
 -include("./pgsql_protocol_messages.hrl").
+-define(idle_timeout, timer:seconds(5)).
 -define(backoff_init, timer:seconds(1)).
 -define(backoff_max, timer:seconds(30)).
+-define(record_to_map(Tag, Value), maps:from_list(
+    lists:zip(record_info(fields, Tag), tl(tuple_to_list(Data))))).
 
 -record(options, {
     transport :: transport_options(),
@@ -37,8 +35,8 @@
 
 -record(statement, {
     name :: binary(),
-    parameters :: [pgsql_types:oid()],
-    fields :: [#msg_row_description_field{}]
+    parameters :: [pgsql_types:oid()] | undefined,
+    fields :: [#msg_row_description_field{}] | undefined
 }).
 
 %% Data records
@@ -62,7 +60,8 @@
 -record(preparing, {
     from :: gen_statem:from(),
     name :: binary(),
-    parameters = [] :: [pgsql_types:oid()]
+    parameters = [] :: [pgsql_types:oid()],
+    execute = false :: false | {[Parameters :: any()], map()}
 }).
 
 -record(executing, {
@@ -95,7 +94,7 @@
     application_name => string()
 }.
 start_link(TransportOpts, DatabaseOpts) ->
-    gen_statem:start_link(?MODULE, {TransportOpts, DatabaseOpts}, [{debug, [trace]}]).
+    gen_statem:start_link(?MODULE, {TransportOpts, DatabaseOpts}, []).
 
 -spec stop(Conn) -> ok when Conn :: connection().
 stop(Conn) ->
@@ -146,13 +145,23 @@ init({TransportOpts, DatabaseOpts}) ->
             application_name => "erlang-pgsql"
         }, DatabaseOpts)
     },
-    {handle_event_function, disconnected, #disconnected{options = Options}, [{next_event, internal, connect}]}.
+    {handle_event_function, disconnected, #disconnected{options = Options}, {next_event, internal, connect}}.
 
 terminate(_Reason, _State, _Data) ->
     ok.
 
 code_change(_OldVsn, _OldState, _OldData, _Extra) ->
     erlang:exit(not_implemented).
+
+format_status(terminate, [_PDict, State, Data]) ->
+    {State, format_status_data(Data)};
+format_status(_, [_PDict, State, Data]) ->
+    [{data, [{"State", {State, format_status_data(Data)}}]}].
+
+format_status_data(#connected{} = Data) ->
+    maps:without([transport_tags, buffer], ?record_to_map(connected, Data));
+format_status_data(#disconnected{} = Data) ->
+    ?record_to_map(disconnected, Data).
 
 
 handle_event(info, {Tag, Source, Data}, _, #connected{transport_tags = {Tag, _, _, Source}} = Connected) ->
@@ -163,15 +172,15 @@ handle_event(info, {Tag, Source, Data}, _, #connected{transport_tags = {Tag, _, 
 handle_event(info, {Tag, Source}, _, #connected{transport_tags = {_, Closed, Error, Source}} = Connected) when Tag =:= Closed; Tag =:= Error ->
     #connected{options = Options, transport = Transport} = Connected,
     _ = pgsql_transport:close(Transport),
-    {next_state, disconnected, #disconnected{options = Options}, [{next_event, internal, connect}]};
+    {next_state, disconnected, #disconnected{options = Options}, {next_event, internal, connect}};
 handle_event(EventType, EventContent, disconnected, Data) ->
     disconnected(EventType, EventContent, Data);
 handle_event(EventType, EventContent, authenticating, Data) ->
     authenticating(EventType, EventContent, Data);
 handle_event(EventType, EventContent, configuring, Data) ->
     configuring(EventType, EventContent, Data);
-handle_event(EventType, EventContent, idle, Data) ->
-    idle(EventType, EventContent, Data);
+handle_event(EventType, EventContent, ready, Data) ->
+    ready(EventType, EventContent, Data);
 handle_event(EventType, EventContent, #preparing{} = Preparing, Data) ->
     preparing(EventType, EventContent, Preparing, Data);
 handle_event(EventType, EventContent, #executing{} = Executing, Data) ->
@@ -203,10 +212,10 @@ disconnected(internal, connect, Data) ->
     end;
 
 disconnected(info, {timeout, Ref, reconnect}, #disconnected{backoff_timer = Ref} = Data) ->
-    {keep_state, Data, [{next_event, internal, connect}]};
+    {keep_state, Data, {next_event, internal, connect}};
 
 disconnected({call, From}, _, Data) ->
-    {keep_state, Data, [{reply, From, {error, disconnected}}]};
+    {keep_state, Data, {reply, From, {error, disconnected}}};
 
 disconnected(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -235,7 +244,6 @@ do_backoff(#disconnected{backoff_delay = BackoffDelay} = Data) ->
         backoff_delay = backoff:rand_increment(BackoffDelay, ?backoff_max),
         backoff_timer = reconnect_timout(BackoffDelay)
     }.
-
 
 %%%% Authenticating
 
@@ -271,9 +279,9 @@ do_authenticate(_Transport, Other, _Salt, _User, _Password) ->
 %%%% Configuring
 
 configuring(internal, #msg_ready_for_query{}, Data) ->
-    {next_state, idle, Data#connected{
+    {next_state, ready, Data#connected{
         codec = pgsql_codec:new(Data#connected.parameters, #{})
-    }};
+    }, [{timeout, ?idle_timeout, idle}]};
 
 configuring(internal, #msg_backend_key_data{id = Id, secret = Secret}, Data) ->
     {keep_state, Data#connected{backend_key = {Id, Secret}}};
@@ -292,22 +300,21 @@ configuring(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
 
-%%%% Idle
+%%%% Ready
 
-idle({call, From}, {prepare, Name, Statement, _Opts}, Data) ->
+ready({call, From}, {prepare, Name, Statement, _Opts}, Data) ->
     ok = do_prepare(Data#connected.transport, Name, Statement),
     {next_state, #preparing{from = From, name = Name}, Data};
 
-idle(cast, {unprepare, Name, _Opts}, Data) ->
+ready(cast, {unprepare, Name, _Opts}, Data) ->
     ok = do_unprepare(Data#connected.transport, Name),
     {next_state, syncing, Data};
 
-idle({call, From}, {execute, #statement{} = Statement, Params, _Opts}, Data) ->
+ready({call, From}, {execute, #statement{} = Statement, Params, _Opts}, Data) ->
     #statement{name = Name, parameters = ParamTypes, fields = FieldsDesc} = Statement,
-    #connected{codec = Codec} = Data,
+    #connected{transport = Transport, codec = Codec} = Data,
     case length(ParamTypes) =:= length(Params) of
         true ->
-            #connected{transport = Transport} = Data,
             FieldsTypes = [FieldType || #msg_row_description_field{type_oid = FieldType} <- FieldsDesc],
             case pgsql_codec:has_types(ParamTypes ++ FieldsTypes, Codec) of
                 true ->
@@ -318,13 +325,20 @@ idle({call, From}, {execute, #statement{} = Statement, Params, _Opts}, Data) ->
                     {next_state, #updating_types{types = pgsql_types:new()}, Data, [postpone]}
             end;
         false ->
-            {keep_state, Data, [{reply, From, {error, invalid_params_length}}]}
+            {keep_state, Data, {reply, From, {error, invalid_params_length}}}
     end;
+ready({call, From}, {execute, Statement, Params, Opts}, Data) ->
+    #connected{transport = Transport} = Data,
+    ok = do_prepare(Transport, <<>>, Statement),
+    {next_state, #preparing{from = From, name = <<>>, execute = {Params, Opts}}, Data};
 
-idle({call, From}, Request, Data) ->
-    {keep_state, Data, [{reply, From, {error, {unhandled_request, Request}}}]};
+ready({call, From}, Request, Data) ->
+    {keep_state, Data, {reply, From, {error, {unhandled_request, Request}}}};
 
-idle(EventType, EventContent, Data) ->
+ready(timeout, idle, Data) ->
+    {keep_state, Data, hibernate};
+
+ready(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
 
@@ -379,29 +393,35 @@ preparing(internal, #msg_parameter_description{types = Types}, Preparing, Data) 
     {next_state, Preparing#preparing{parameters = Types}, Data};
 
 preparing(internal, #msg_row_description{fields = Fields}, Preparing, Data) ->
+    preparing_done(Fields, Preparing, Data);
+
+preparing(internal, #msg_no_data{}, Preparing, Data) ->
+    preparing_done([], Preparing, Data);
+
+preparing(internal, #msg_error_response{fields = Fields}, Preparing, Data) ->
+    #preparing{from = From} = Preparing,
+    {next_state, syncing, Data, {reply, From, {error, Fields}}};
+
+preparing(EventType, EventContent, _, Data) ->
+    handle_event(EventType, EventContent, Data).
+
+
+preparing_done(Fields, #preparing{execute = false} = Preparing, Data) ->
     #preparing{from = From, name = Name, parameters = Parameters} = Preparing,
     Statement = #statement{
         name = Name,
         parameters = Parameters,
         fields = Fields
     },
-    {next_state, syncing, Data, [{reply, From, {ok, Statement}}]};
-
-preparing(internal, #msg_no_data{}, Preparing, Data) ->
+    {next_state, syncing, Data, {reply, From, {ok, Statement}}};
+preparing_done(Fields, #preparing{execute = {Params, Opts}} = Preparing, Data) ->
     #preparing{from = From, name = Name, parameters = Parameters} = Preparing,
     Statement = #statement{
         name = Name,
         parameters = Parameters,
-        fields = []
+        fields = Fields
     },
-    {next_state, syncing, Data, [{reply, From, {ok, Statement}}]};
-
-preparing(internal, #msg_error_response{fields = Fields}, Preparing, Data) ->
-    #preparing{from = From} = Preparing,
-    {next_state, syncing, Data, [{reply, From, {error, Fields}}]};
-
-preparing(EventType, EventContent, _, Data) ->
-    handle_event(EventType, EventContent, Data).
+    {next_state, syncing, Data, {next_event, {call, From}, {execute, Statement, Params, Opts}}}.
 
 %%%% updating_types
 
@@ -445,20 +465,20 @@ executing(internal, #msg_data_row{values = Values}, Executing, Data) ->
 executing(internal, #msg_command_complete{tag = _Tag}, Executing, Data) ->
     #executing{from = From, statement = #statement{fields = Fields}, rows = Rows} = Executing,
     FieldsNames = [FieldName || #msg_row_description_field{name = FieldName} <- Fields],
-    {next_state, syncing, Data, [{reply, From, {ok, FieldsNames, lists:reverse(Rows)}}]};
+    {next_state, syncing, Data, {reply, From, {ok, FieldsNames, lists:reverse(Rows)}}};
 
 executing(internal, #msg_no_data{}, Executing, Data) ->
     #executing{from = From, statement = #statement{fields = Fields}} = Executing,
     FieldsNames = [FieldName || #msg_row_description_field{name = FieldName} <- Fields],
-    {next_state, syncing, Data, [{reply, From, {ok, FieldsNames, []}}]};
+    {next_state, syncing, Data, {reply, From, {ok, FieldsNames, []}}};
 
 executing(internal, #msg_empty_query_response{}, Executing, Data) ->
     #executing{from = From} = Executing,
-    {next_state, syncing, Data, [{reply, From, {ok, [], []}}]};
+    {next_state, syncing, Data, {reply, From, {ok, [], []}}};
 
 executing(internal, #msg_error_response{fields = Fields}, Executing, Data) ->
     #executing{from = From} = Executing,
-    {next_state, syncing, Data, [{reply, From, {error, Fields}}]};
+    {next_state, syncing, Data, {reply, From, {error, Fields}}};
 
 executing(EventType, EventContent, _, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -471,10 +491,11 @@ do_decode_row(Fields, Values, Codec) ->
         (Type, Value) -> pgsql_codec:decode(Type, Value, Codec)
     end, Types, Values)).
 
+
 %%%% syncing
 
 syncing(internal, #msg_ready_for_query{}, Data) ->
-    {next_state, idle, Data};
+    {next_state, ready, Data, {timeout, ?idle_timeout, idle}};
 
 syncing(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
