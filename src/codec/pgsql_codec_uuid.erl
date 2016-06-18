@@ -8,7 +8,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"uuid_send">>].
+    [uuid_send].
 
 encode(_Type, <<_:128>> = UUID, _Codec, _Opts) ->
     UUID;
@@ -16,7 +16,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"uuid_recv">>].
+    [uuid_recv].
 
 decode(_Type, <<_:128>> = UUID, _Codec, _Opts) ->
     UUID.

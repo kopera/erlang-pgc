@@ -8,7 +8,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"void_send">>].
+    [void_send].
 
 encode(_Type, void, _Codec, _Opts) ->
     <<>>;
@@ -16,7 +16,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"void_recv">>].
+    [void_recv].
 
 decode(_Type, <<>>, _Codec, _Opts) ->
     void.

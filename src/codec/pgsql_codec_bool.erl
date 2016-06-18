@@ -9,7 +9,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"boolsend">>].
+    [boolsend].
 
 encode(_Type, true, _Codec, _Opts) ->
     <<1>>;
@@ -19,7 +19,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"boolrecv">>].
+    [boolrecv].
 
 decode(_Type, <<1>>, _Codec, _Opts) ->
     true;

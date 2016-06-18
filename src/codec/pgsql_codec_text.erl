@@ -12,7 +12,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"bpcharsend">>, <<"textsend">>, <<"varcharsend">>, <<"charsend">>, <<"namesend">>, <<"citextsend">>].
+    [bpcharsend, textsend, varcharsend, charsend, namesend, citextsend].
 
 encode(_Type, Bytes, _Codec, _Opts) when is_binary(Bytes); is_list(Bytes) ->
     unicode:characters_to_binary(Bytes);
@@ -20,7 +20,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"bpcharrecv">>, <<"textrecv">>, <<"varcharrecv">>, <<"charrecv">>, <<"namerecv">>, <<"citextrecv">>].
+    [bpcharrecv, textrecv, varcharrecv, charrecv, namerecv, citextrecv].
 
 decode(_Type, Bytes, _Codec, _Opts) ->
     binary:copy(Bytes).

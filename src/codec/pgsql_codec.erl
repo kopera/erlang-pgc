@@ -14,9 +14,9 @@
 
 
 -callback init(params(), options()) -> state().
--callback encodes(state()) -> [binary()].
+-callback encodes(state()) -> [atom()].
 -callback encode(type(), Value :: any(), codec(), state()) -> iodata().
--callback decodes(state()) -> [binary()].
+-callback decodes(state()) -> [atom()].
 -callback decode(type(), binary(), codec(), state()) -> any().
 -optional_callbacks([init/2]).
 
@@ -24,10 +24,10 @@
 -record(codec, {
     parameters :: map(),
     options :: map(),
-    states = #{} :: #{module() => state()},
+    states = [] :: [{module(), state()}],
     types = ordsets:new() :: ordsets:ordset(pgsql_types:oid()),
-    encoders = #{} :: #{pgsql_types:oid () => {module(), type()}},
-    decoders = #{} :: #{pgsql_types:oid () => {module(), type()}}
+    encoders = [] :: [{pgsql_types:oid(), module(), type()}],
+    decoders = [] :: [{pgsql_types:oid(), module(), type()}]
 }).
 -type oid() :: pgsql_types:oid().
 -type type() :: pgsql_types:type().
@@ -45,7 +45,7 @@ new(Parameters, Options, Modules) ->
     #codec{
         parameters = Parameters,
         options = Options,
-        states = maps:from_list([{Module, mod_init(Module, Parameters, Options)} || Module <- Modules])
+        states = [{Module, mod_init(Module, Parameters, Options)} || Module <- Modules]
     }.
 
 new(Parameters, Options) ->
@@ -80,29 +80,28 @@ mod_init(Module, Parameters, Options) ->
     end.
 
 -spec update_parameters(params(), codec()) -> codec().
-update_parameters(Parameters, #codec{options = Options, states = Codecs} = Codec) ->
+update_parameters(Parameters, #codec{options = Options, states = States} = Codec) ->
     Codec#codec{
         parameters = Parameters,
-        states = maps:map(fun (Module, _) -> mod_init(Module, Parameters, Options) end, Codecs)
+        states = [{Module, mod_init(Module, Parameters, Options)} || {Module, _} <- States]
     }.
 
 -spec update_types(types(), codec()) -> codec().
 update_types(Types, #codec{states = States} = Codec) ->
-    StatesList = maps:to_list(States),
     Codec#codec{
         types = ordsets:from_list([Oid || #pgsql_type_info{oid = Oid} <- Types]),
         encoders = lists:foldl(fun (#pgsql_type_info{oid = Oid, send = Send} = Type, Acc) ->
-            case find_encoder(Send, StatesList) of
-                {ok, Encoder} -> maps:put(Oid, {Encoder, Type}, Acc);
+            case find_encoder(Send, States) of
+                {ok, Encoder} -> [{Oid, Encoder, Type} | Acc];
                 error -> Acc
             end
-        end, #{}, Types),
+        end, [], Types),
         decoders = lists:foldl(fun (#pgsql_type_info{oid = Oid, recv = Recv} = Type, Acc) ->
-            case find_decoder(Recv, StatesList) of
-                {ok, Decoder} -> maps:put(Oid, {Decoder, Type}, Acc);
+            case find_decoder(Recv, States) of
+                {ok, Decoder} -> [{Oid, Decoder, Type} | Acc];
                 error -> Acc
             end
-        end, #{}, Types)
+        end, [], Types)
     }.
 
 -spec has_types([oid()], codec()) -> boolean().
@@ -127,18 +126,21 @@ find_decoder(Recv, [{Module, State} | Codecs]) ->
 
 -spec encode(oid(), any(), codec()) -> binary().
 encode(Oid, Value, #codec{states = States, encoders = Encoders} = Codec) ->
-    case maps:find(Oid, Encoders) of
-        {ok, {Module, Type}} ->
-            Module:encode(Type, Value, Codec, maps:get(Module, States));
-        error ->
+    case lists:keyfind(Oid, 1, Encoders) of
+        {Oid, Module, Type} ->
+            {Module, State} = lists:keyfind(Module, 1, States),
+            Module:encode(Type, Value, Codec, State);
+        false ->
             exit({no_encoder, Oid})
     end.
 
 -spec decode(oid(), binary(), codec()) -> binary().
 decode(Oid, Value, #codec{states = States, decoders = Decoders} = Codec) ->
-    case maps:find(Oid, Decoders) of
-        {ok, {Module, Type}} ->
-            Module:decode(Type, Value, Codec, maps:get(Module, States));
-        error ->
-            exit({no_decoder, Oid})
+    case lists:keyfind(Oid, 1, Decoders) of
+        {Oid, Module, Type} ->
+            {Module, State} = lists:keyfind(Module, 1, States),
+            Module:decode(Type, Value, Codec, State);
+        false ->
+            {unknown, Value}
+            %exit({no_decoder, Oid})
     end.

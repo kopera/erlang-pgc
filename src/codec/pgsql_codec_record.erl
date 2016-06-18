@@ -10,7 +10,7 @@
 -include("../../include/types.hrl").
 
 encodes(_Opts) ->
-    [<<"record_send">>].
+    [record_send].
 
 encode(#pgsql_type_info{fields = Fields}, Value, Codec, _Opts) when is_map(Value) ->
     encode_record(Codec, Fields, Value);
@@ -18,7 +18,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"record_recv">>].
+    [record_recv].
 
 decode(#pgsql_type_info{fields = Fields}, Data, Codec, _Opts) ->
     decode_record(Codec, Fields, Data).

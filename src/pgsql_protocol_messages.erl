@@ -277,7 +277,7 @@ decode_row_description_fields(Payload, Acc) ->
 %% @private
 decode_string(Data) -> decode_string(Data, <<>>).
 
-decode_string(<<0, Rest/binary>>, Acc) -> {Acc, Rest};
+decode_string(<<0, Rest/binary>>, Acc) -> {binary:copy(Acc), Rest};
 decode_string(<<C, Rest/binary>>, Acc) -> decode_string(Rest, <<Acc/binary, C>>).
 
 %% @private

@@ -14,7 +14,8 @@ encode_message(Message) ->
 
 -spec decode_messages(binary()) -> {[pgsql_protocol_messages:message()], Rest :: binary()}.
 decode_messages(Data) ->
-    decode_messages(Data, []).
+    {Messages, Rest} = decode_messages(Data, []),
+    {Messages, binary:copy(Rest)}.
 
 decode_messages(Data, Acc) ->
     case decode_message(Data) of

@@ -51,9 +51,9 @@ get_query() ->
 make_type([Oid, Name, Send, Recv, ElementType, ParentType, FieldsNames, FieldsTypes]) ->
     #pgsql_type_info{
         oid = pgsql_codec_oid:decode(Oid),
-        name = pgsql_codec_text:decode(Name),
-        send = pgsql_codec_text:decode(Send),
-        recv = pgsql_codec_text:decode(Recv),
+        name = binary_to_atom(pgsql_codec_text:decode(Name), utf8),
+        send = binary_to_atom(pgsql_codec_text:decode(Send), utf8),
+        recv = binary_to_atom(pgsql_codec_text:decode(Recv), utf8),
         element = case pgsql_codec_oid:decode(ElementType) of
             0 -> undefined;
             ElementOid -> ElementOid
@@ -67,7 +67,7 @@ make_type([Oid, Name, Send, Recv, ElementType, ParentType, FieldsNames, FieldsTy
 
 make_fields(Names, Types) ->
     case lists:zip(
-        pgsql_codec_array:decode(fun (_Oid, V) -> pgsql_codec_text:decode(V) end, Names),
+        pgsql_codec_array:decode(fun (_Oid, V) -> binary_to_atom(pgsql_codec_text:decode(V), utf8) end, Names),
         pgsql_codec_array:decode(fun (_Oid, V) -> pgsql_codec_oid:decode(V) end, Types)
     ) of
         [] -> undefined;
