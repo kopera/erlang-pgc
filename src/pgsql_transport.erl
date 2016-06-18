@@ -3,6 +3,7 @@
     open/5,
     dup/1,
     send/2,
+    recv/2,
     close/1,
     set_opts/2,
     get_tags/1
@@ -83,6 +84,12 @@ send(#tcp_transport{socket = Socket}, Data) ->
     gen_tcp:send(Socket, Data);
 send(#ssl_transport{socket = Socket}, Data) ->
     ssl:send(Socket, Data).
+
+-spec recv(transport(), non_neg_integer()) -> {ok, binary()} | {error, any()}.
+recv(#tcp_transport{socket = Socket}, Length) ->
+    gen_tcp:recv(Socket, Length);
+recv(#ssl_transport{socket = Socket}, Length) ->
+    ssl:recv(Socket, Length).
 
 -spec close(transport()) -> ok.
 close(#tcp_transport{socket = Socket}) ->
