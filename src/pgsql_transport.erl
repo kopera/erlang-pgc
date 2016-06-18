@@ -71,7 +71,8 @@ open(Host, Port, SSL, SSLOpts, Timeout) ->
             {error, Error}
     end.
 
--spec dup(transport()) -> transport().
+-spec dup(transport()) -> {ok, transport()} | {error, Error} when
+    Error :: ssl_not_available | inet:posix() | any().
 dup(#tcp_transport{peer = {Host, Port}, connect_timeout = Timeout}) ->
     open(Host, Port, disable, [], Timeout);
 dup(#ssl_transport{peer = {Host, Port}, opts = Opts, connect_timeout = Timeout}) ->
