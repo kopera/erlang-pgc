@@ -1,24 +1,33 @@
--module(execute_SUITE).
+-module(connection_SUITE).
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
 -include("../include/types.hrl").
 
 all() ->
-    [iodata, {group, decode}].
+    [{group, all}].
 
 groups() ->
-    [{decode, [parallel], [
-        decode_basic_types,
-        decode_uuid,
-        decode_arrays,
-        decode_time,
-        decode_date,
-        decode_datetime,
-        decode_interval,
-        decode_record,
-        decode_oid
-    ]}].
+    [
+        {all, [parallel, shuffle], [
+            iodata,
+            timeout,
+            hibernate,
+            binref_leak,
+            {group, decode}
+        ]},
+        {decode, [parallel, shuffle], [
+            decode_basic_types,
+            decode_uuid,
+            decode_arrays,
+            decode_time,
+            decode_date,
+            decode_datetime,
+            decode_interval,
+            decode_record,
+            decode_oid
+        ]}
+    ].
 
 
 init_per_suite(Config) ->
@@ -45,6 +54,26 @@ end_per_testcase(_Case, Config) ->
 
 iodata(Config) ->
     {ok, [_], [{123}]} = execute([["S", $E, [<<"LEC">> | "T"], " ", "123"], []], Config).
+
+timeout(Config) ->
+    {error, timeout} = execute("select pg_sleep(2)", [], #{timeout => 200}, Config),
+    {ok, [_], [{void}]} = execute("select pg_sleep(1)", [], #{timeout => timer:seconds(2)}, Config).
+
+hibernate(Config) ->
+    Conn = ?config(conn, Config),
+    {ok, _, _} = execute("select * from pg_user", Config),
+    [{memory, M1}] = erlang:process_info(Conn, [memory]),
+    timer:sleep(timer:seconds(6)),
+    [{current_function, {erlang, hibernate, _}}] = erlang:process_info(Conn, [current_function]),
+    [{memory, M2}] = erlang:process_info(Conn, [memory]),
+    true = (M2 =< M1).
+
+
+binref_leak(Config) ->
+    Conn = ?config(conn, Config),
+    {ok, _, _} = execute("select * from pg_user", Config),
+    _ = erlang:garbage_collect(Conn),
+    [{binary, []}] = erlang:process_info(Conn, [binary]).
 
 decode_basic_types(Config) ->
     {ok, [_], [{null}]} = execute("SELECT NULL", Config),
