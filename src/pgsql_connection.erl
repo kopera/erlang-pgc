@@ -203,7 +203,8 @@ handle_event(info, {Tag, Source, Data}, _, #connected{transport_tags = {Tag, _, 
     {Messages, Rest} = pgsql_protocol:decode_messages(<<Buffer/binary, Data/binary>>),
     ok = pgsql_transport:set_opts(Transport, [{active, once}]),
     {keep_state, Connected#connected{buffer = Rest}, [{next_event, internal, Message} || Message <- Messages]};
-handle_event(info, {Tag, Source}, _, #connected{transport_tags = {_, Closed, Error, Source}} = Connected) when Tag =:= Closed; Tag =:= Error ->
+handle_event(info, {Tag, Source}, _, #connected{transport_tags = {_, Closed, Error, Source}} = Connected)
+        when Tag =:= Closed; Tag =:= Error ->
     #connected{options = Options, transport = Transport} = Connected,
     _ = pgsql_transport:close(Transport),
     {next_state, disconnected, #disconnected{options = Options}, {next_event, internal, connect}};
