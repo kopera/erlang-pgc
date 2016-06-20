@@ -16,7 +16,7 @@ ok
 ## TODO
 
 ### Pooling
-Of course :)
+Replace the basic pooling with sbroker
 
 ### Keep alive
 We need to send periodic sync commands on Idle to keep the connection alive.
