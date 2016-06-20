@@ -7,7 +7,8 @@
 -export([
     prepare/4,
     unprepare/3,
-    execute/4
+    execute/4,
+    transaction/3
 ]).
 
 
@@ -25,6 +26,8 @@
 -define(idle_timeout, timer:seconds(5)).
 -define(backoff_init, timer:seconds(1)).
 -define(backoff_max, timer:seconds(30)).
+-define(identifier_prefix, ("erlang_pgsql_" ?MODULE_STRING)).
+-define(savepoint(Id), [?identifier_prefix, "_savepoint_", integer_to_list(Id)]).
 -define(record_to_map(Tag, Value), maps:from_list(
     lists:zip(record_info(fields, Tag), tl(tuple_to_list(Data))))).
 
@@ -53,6 +56,7 @@
     backend_key :: {pos_integer(), pos_integer()} | undefined,
     parameters = #{} :: map(),
     codec :: pgsql_codec:codec() | undefined,
+    transaction = 0 :: non_neg_integer(),
     buffer = <<>> :: binary()
 }).
 
@@ -68,6 +72,10 @@
     client :: pid(),
     monitor :: reference(),
     timeout :: reference() | undefined
+}).
+
+-record(executing_simple, {
+    from :: gen_statem:from()
 }).
 
 -record(updating_types, {
@@ -120,7 +128,7 @@ unprepare(Conn, #statement{name = Name}, Opts) ->
     Conn :: connection(),
     Statement :: statement() | prepared_statement(),
     Params :: [any()],
-    Opts :: map(),
+    Opts :: #{timeout => timeout()},
     Fields :: [binary()],
     Rows :: [Row],
     Row :: [any()].
@@ -128,7 +136,7 @@ execute(Conn, Statement, Params, Opts) ->
     case gen_statem:call(Conn, {execute, Statement, Params, Opts}) of
         {ok, C, Ref, FieldNames, FieldTypes, Codec} ->
             Fold = fun (Row, Rows) ->
-                [do_decode_row(FieldTypes, Row, Codec) | Rows]
+                [decode_row(FieldTypes, Row, Codec) | Rows]
             end,
             Mref = start_monitor(C),
             try execute_fold(Fold, [], Ref, Mref) of
@@ -155,11 +163,28 @@ execute_fold(Fun, Acc, ReqRef, Mref) ->
             exit(Reason)
     end.
 
-do_decode_row(Types, Values, Codec) ->
-    list_to_tuple(lists:zipwith(fun
-        (_Type, null) -> null;
-        (Type, Value) -> pgsql_codec:decode(Type, Value, Codec)
-    end, Types, Values)).
+-spec transaction(Conn, Fun, Opts) -> Result | {error, term()} when
+    Conn :: connection(),
+    Fun :: fun((Conn) -> Result),
+    Opts :: map().
+transaction(Conn, Fun, Opts) ->
+    case gen_statem:call(Conn, {transaction, Opts}) of
+        ok ->
+            try
+                Result = Fun(Conn),
+                ok = gen_statem:call(Conn, {commit, Opts}),
+                Result
+            catch
+                throw:Error ->
+                    ok = gen_statem:call(Conn, {rollback, Opts}),
+                    Error;
+                Class:Error ->
+                    ok = gen_statem:call(Conn, {rollback, Opts}),
+                    erlang:raise(Class, Error, erlang:get_stacktrace())
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
 
 init({TransportOpts, DatabaseOpts}) ->
@@ -220,6 +245,8 @@ handle_event(EventType, EventContent, #preparing{} = Preparing, Data) ->
     preparing(EventType, EventContent, Preparing, Data);
 handle_event(EventType, EventContent, #executing{} = Executing, Data) ->
     executing(EventType, EventContent, Executing, Data);
+handle_event(EventType, EventContent, #executing_simple{} = Executing, Data) ->
+    executing_simple(EventType, EventContent, Executing, Data);
 handle_event(EventType, EventContent, #updating_types{} = UpdatingTypes, Data) ->
     updating_types(EventType, EventContent, UpdatingTypes, Data);
 handle_event(EventType, EventContent, syncing, Data) ->
@@ -255,6 +282,7 @@ disconnected({call, From}, _, Data) ->
 disconnected(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
+
 do_connect(TransportOpts, DatabaseOpts) ->
     #{
         host := Host,
@@ -289,25 +317,26 @@ authenticating(internal, #msg_auth{type = Type, data = AuthData}, Data) ->
     #connected{options = Options, transport = Transport} = Data,
     #options{database = #{user := User, password := Password}} = Options,
 
-    case do_authenticate(Transport, Type, AuthData, User, Password) of
+    case send_authenticate_reply(Transport, Type, AuthData, User, Password) of
         ok -> {keep_state, Data};
         {error, Reason} -> {stop, Reason}
     end;
 
 authenticating(internal, #msg_error_response{fields = Fields}, Data) ->
-    handle_fatal_error(Fields, Data);
+    handle_fatal_error(convert_error(Fields), Data);
 
 authenticating(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
-do_authenticate(Transport, cleartext, _, _, Password) ->
+
+send_authenticate_reply(Transport, cleartext, _, _, Password) ->
     send(Transport, [#msg_password{password = Password}]);
-do_authenticate(Transport, md5, Salt, User, Password) ->
+send_authenticate_reply(Transport, md5, Salt, User, Password) ->
     % concat('md5', md5(concat(md5(concat(password, username)), random-salt)))
     MD5 = io_lib:format("~32.16.0b", [crypto:hash(md5, [Password, User])]),
     SaltedMD5 = io_lib:format("~32.16.0b", [crypto:hash(md5, [MD5, Salt])]),
     send(Transport, [#msg_password{password = ["md5", SaltedMD5]}]);
-do_authenticate(_Transport, Other, _Salt, _User, _Password) ->
+send_authenticate_reply(_Transport, Other, _Salt, _User, _Password) ->
     {error, {not_implemented, {auth, Other}}}.
 
 
@@ -329,7 +358,7 @@ configuring(internal, #msg_notice_response{}, Data) ->
     {keep_state, Data};
 
 configuring(internal, #msg_error_response{fields = Fields}, Data) ->
-    handle_fatal_error(Fields, Data);
+    handle_fatal_error(convert_error(Fields), Data);
 
 configuring(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -338,11 +367,11 @@ configuring(EventType, EventContent, Data) ->
 %%%% Ready
 
 ready({call, From}, {prepare, Name, Statement, _Opts}, Data) ->
-    ok = do_prepare(Data#connected.transport, Name, Statement),
+    ok = send_prepare(Data#connected.transport, Name, Statement),
     {next_state, #preparing{from = From, name = Name}, Data};
 
 ready(cast, {unprepare, Name, _Opts}, Data) ->
-    ok = do_unprepare(Data#connected.transport, Name),
+    ok = send_unprepare(Data#connected.transport, Name),
     {next_state, syncing, Data};
 
 ready({call, {Client, _} = From}, {execute, #statement{} = Statement, Params, Opts}, Data) ->
@@ -356,13 +385,13 @@ ready({call, {Client, _} = From}, {execute, #statement{} = Statement, Params, Op
                 true ->
                     Monitor = start_monitor(Client),
                     Timeout = request_timeout(maps:get(timeout, Opts, infinity)),
-                    do_execute(Transport, Name, do_encode_params(ParamTypes, Params, Codec)),
+                    send_execute(Transport, Name, encode_params(ParamTypes, Params, Codec)),
                     {next_state,
                         #executing{client = Client, monitor = Monitor, timeout = Timeout},
                         Data,
                         {reply, From, {ok, self(), Monitor, FieldsNames, FieldsTypes, Codec}}};
                 false ->
-                    ok = do_update_types(Transport),
+                    ok = send_sync_types(Transport),
                     {next_state, #updating_types{types = pgsql_types:new()}, Data, [postpone]}
             end;
         false ->
@@ -370,8 +399,42 @@ ready({call, {Client, _} = From}, {execute, #statement{} = Statement, Params, Op
     end;
 ready({call, From}, {execute, Statement, Params, Opts}, Data) ->
     #connected{transport = Transport} = Data,
-    ok = do_prepare(Transport, <<>>, Statement),
+    ok = send_prepare(Transport, <<>>, Statement),
     {next_state, #preparing{from = From, name = <<>>, execute = {Params, Opts}}, Data};
+
+ready({call, From}, {transaction, _Opts}, Data) ->
+    #connected{transport = Transport, transaction = Transaction} = Data,
+    ok = send_execute_simple(Transport, if
+        Transaction =:= 0 -> "start transaction";
+        Transaction > 0 -> ["savepoint ", ?savepoint(Transaction)]
+    end),
+    {next_state, #executing_simple{from = From}, Data};
+
+ready({call, From}, {commit, _Opts}, Data) ->
+    #connected{transport = Transport, transaction = Transaction} = Data,
+    case Transaction of
+        0 ->
+            {keep_state, Data, [{reply, From, {error, not_in_transaction}}]};
+        N when N > 0 ->
+            ok = send_execute_simple(Transport, if
+                Transaction =:= 1 -> "commit";
+                Transaction > 1 -> ["release savepoint ", ?savepoint(Transaction - 1)]
+            end),
+            {next_state, #executing_simple{from = From}, Data}
+    end;
+
+ready({call, From}, {rollback, _Opts}, Data) ->
+    #connected{transport = Transport, transaction = Transaction} = Data,
+    case Transaction of
+        0 ->
+            {keep_state, Data, [{reply, From, {error, not_in_transaction}}]};
+        N when N > 0 ->
+            ok = send_execute_simple(Transport, if
+                Transaction =:= 1 -> "rollback";
+                Transaction > 1 -> ["rollback to savepoint ", ?savepoint(Transaction - 1)]
+            end),
+            {next_state, #executing_simple{from = From}, Data}
+    end;
 
 ready({call, From}, Request, Data) ->
     {keep_state, Data, {reply, From, {error, {unhandled_request, Request}}}};
@@ -383,37 +446,31 @@ ready(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
 
 
-do_prepare(Transport, Name, Statement) ->
+send_prepare(Transport, Name, Statement) ->
     send(Transport, [
         #msg_parse{name = Name, statement = Statement},
         #msg_describe{type = statement, name = Name},
         #msg_sync{}
     ]).
 
-do_unprepare(Transport, Name) ->
+send_unprepare(Transport, Name) ->
     send(Transport, [
         #msg_close{type = statement, name = Name},
         #msg_sync{}
     ]).
 
-do_update_types(Transport) ->
-    StatementName = "erlang-pgsql:" ++ ?MODULE_STRING ++ ":do_update_types/1",
+send_sync_types(Transport) ->
+    StatementName = [?identifier_prefix, "_fetch_types"],
     {Statement, Results} = pgsql_types:get_query(),
     send(Transport, [
         #msg_parse{name = StatementName, statement = Statement},
         #msg_bind{portal = "", statement = StatementName, results = Results},
         #msg_close{type = statement, name = StatementName},
-        #msg_execute{portal = "", limit = 0},
+        #msg_execute{portal = ""},
         #msg_sync{}
     ]).
 
-do_encode_params(Types, Values, Codec) ->
-    lists:zipwith(fun
-        (_Type, null) -> {binary, null};
-        (Type, Value) -> {binary, pgsql_codec:encode(Type, Value, Codec)}
-    end, Types, Values).
-
-do_execute(Transport, Name, Params) ->
+send_execute(Transport, Name, Params) ->
     send(Transport, [
         #msg_bind{
             statement = Name,
@@ -421,7 +478,16 @@ do_execute(Transport, Name, Params) ->
             parameters = Params,
             results = [binary]
         },
-        #msg_execute{portal = "", limit = 0},
+        #msg_execute{portal = ""},
+        #msg_sync{}
+    ]).
+
+%% Used for executing simple statements without any parameters nor rows
+send_execute_simple(Transport, Statement) ->
+    send(Transport, [
+        #msg_parse{name = "", statement = Statement},
+        #msg_bind{portal = "", statement = ""},
+        #msg_execute{portal = ""},
         #msg_sync{}
     ]).
 
@@ -441,7 +507,7 @@ preparing(internal, #msg_no_data{}, Preparing, Data) ->
 
 preparing(internal, #msg_error_response{fields = Fields}, Preparing, Data) ->
     #preparing{from = From} = Preparing,
-    {next_state, syncing, Data, {reply, From, {error, Fields}}};
+    {next_state, syncing, Data, {reply, From, {error, convert_error(Fields)}}};
 
 preparing(EventType, EventContent, _, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -475,22 +541,23 @@ updating_types(internal, #msg_bind_complete{}, _, Data) ->
 updating_types(internal, #msg_close_complete{}, _, Data) ->
     {keep_state, Data};
 
-updating_types(internal, #msg_data_row{values = Row}, #updating_types{types = Types} = Updating, Data) ->
+updating_types(internal, #msg_data_row{values = Row}, Updating, Data) ->
+    #updating_types{types = Types} = Updating,
     {next_state, Updating#updating_types{
         types = pgsql_types:add(Row, Types)
     }, Data};
 
-updating_types(internal, #msg_command_complete{}, #updating_types{types = Types}, Data) ->
+updating_types(internal, #msg_command_complete{}, Updating, Data) ->
+    #updating_types{types = Types} = Updating,
     {next_state, syncing, Data#connected{
         codec = pgsql_codec:update_types(Types, Data#connected.codec)
     }};
 
 updating_types(internal, #msg_error_response{fields = Fields}, _, Data) ->
-    handle_fatal_error(Fields, Data);
+    handle_fatal_error(convert_error(Fields), Data);
 
 updating_types(EventType, EventContent, _, Data) ->
     handle_event(EventType, EventContent, Data).
-
 
 %%%% executing
 
@@ -526,29 +593,28 @@ executing(internal, #msg_error_response{fields = Fields}, Executing, Data) ->
     #executing{client = Client, monitor = Mref, timeout = Tref} = Executing,
     cancel_timeout(Tref),
     cancel_monitor(Mref),
-    Client ! {Mref, error, Fields},
+    Client ! {Mref, error, convert_error(Fields)},
     {next_state, syncing, Data};
 
 executing(info, {timeout, Tref, cancel_request}, #executing{timeout = Tref} = Executing, Data) ->
     #connected{transport = Transport, backend_key = BackendKey} = Data,
-    #executing{client = Client, monitor = Mref, timeout = Tref} = Executing,
+    #executing{monitor = Mref} = Executing,
     cancel_monitor(Mref),
-    Client ! {Mref, error, timeout},
-    _ = do_cancel(Transport, BackendKey),
-    {next_state, syncing, Data};
+    _ = send_cancel(Transport, BackendKey),
+    {next_state, Executing, Data};
 
 executing(info, {'DOWN', Mref, _, _, _}, #executing{monitor = Mref} = Executing, Data) ->
     #connected{transport = Transport, backend_key = BackendKey} = Data,
     #executing{timeout = Tref} = Executing,
     cancel_timeout(Tref),
-    do_cancel(Transport, BackendKey),
+    send_cancel(Transport, BackendKey),
     {next_state, syncing, Data};
 
 executing(EventType, EventContent, _, Data) ->
     handle_event(EventType, EventContent, Data).
 
 
-do_cancel(Transport, {Id, Secret}) ->
+send_cancel(Transport, {Id, Secret}) ->
     case pgsql_transport:dup(Transport) of
         {ok, T} ->
             _ = send(T, [#msg_cancel_request{
@@ -561,6 +627,39 @@ do_cancel(Transport, {Id, Secret}) ->
         {error, _} = Error ->
             Error
     end.
+
+
+%%%% executing simple
+
+executing_simple(internal, #msg_parse_complete{}, _State, Data) ->
+    {keep_state, Data};
+
+executing_simple(internal, #msg_bind_complete{}, _State, Data) ->
+    {keep_state, Data};
+
+executing_simple(internal, #msg_no_data{}, _State, Data) ->
+    {keep_state, Data};
+
+executing_simple(internal, #msg_command_complete{tag = Tag}, State, Data) ->
+    #executing_simple{from = From} = State,
+    {next_state, syncing, Data#connected{
+        transaction = case Tag of
+            <<"COMMIT">> -> 0;
+            <<"ROLLBACK">> -> Data#connected.transaction - 1;
+            <<"BEGIN">> -> 1;
+            <<"START TRANSACTION">> -> 1;
+            <<"SAVEPOINT">> -> Data#connected.transaction + 1;
+            <<"RELEASE">> -> Data#connected.transaction - 1;
+            <<"PREPARE TRANSACTION">> -> 0
+        end
+    }, {reply, From, ok}};
+
+executing_simple(internal, #msg_error_response{fields = Fields}, State, Data) ->
+    #executing_simple{from = From} = State,
+    {next_state, syncing, Data, {reply, From, {error, convert_error(Fields)}}};
+
+executing_simple(EventType, EventContent, _, Data) ->
+    handle_event(EventType, EventContent, Data).
 
 
 %%%% syncing
@@ -583,6 +682,21 @@ handle_fatal_error(Error, #connected{options = Options, transport = Transport}) 
     _ = pgsql_transport:close(Transport),
     error_logger:error_msg("~s: an error occured: ~p~n", [?MODULE, Error]),
     {next_state, disconnected, do_backoff(#disconnected{options = Options})}.
+
+
+%% Encode/Decode
+
+encode_params(Types, Values, Codec) ->
+    lists:zipwith(fun
+        (_Type, null) -> {binary, null};
+        (Type, Value) -> {binary, pgsql_codec:encode(Type, Value, Codec)}
+    end, Types, Values).
+
+decode_row(Types, Values, Codec) ->
+    list_to_tuple(lists:zipwith(fun
+        (_Type, null) -> null;
+        (Type, Value) -> pgsql_codec:decode(Type, Value, Codec)
+    end, Types, Values)).
 
 %% Helpers
 
@@ -607,3 +721,6 @@ start_monitor(Pid) ->
 
 cancel_monitor(Ref) ->
     erlang:demonitor(Ref).
+
+convert_error(#{code := <<"57014">>}) -> timeout; %% cancelled
+convert_error(Other) -> Other.

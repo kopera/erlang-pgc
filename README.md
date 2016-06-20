@@ -18,5 +18,5 @@ ok
 ### Pooling
 Of course :)
 
-### Transactions
-We need to add support for transactions, including nested transactions (using savepoints).
+### Keep alive
+We need to send periodic sync commands on Idle to keep the connection alive.
