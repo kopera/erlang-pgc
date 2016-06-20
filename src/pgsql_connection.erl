@@ -8,7 +8,8 @@
     prepare/4,
     unprepare/3,
     execute/4,
-    transaction/3
+    transaction/3,
+    reset/1
 ]).
 
 
@@ -198,6 +199,8 @@ transaction(Conn, Fun, Opts) ->
             Error
     end.
 
+reset(Conn) ->
+    gen_statem:cast(Conn, reset).
 
 init({TransportOpts, DatabaseOpts}) ->
     Options = #options{
@@ -397,7 +400,7 @@ ready({call, {Client, _} = From}, {execute, #statement{} = Statement, Params, Op
                     {next_state, #updating_types{types = pgsql_types:new()}, Data, [postpone]}
             end;
         false ->
-            {keep_state, Data, {reply, From, {error, invalid_params_length}}}
+            {keep_state, Data, {reply, From, {error, invalid_params_length}}, {timeout, ?idle_timeout, idle}}
     end;
 ready({call, From}, {execute, Statement, Params, Opts}, Data) ->
     #connected{transport = Transport} = Data,
@@ -416,7 +419,7 @@ ready({call, From}, {commit, _Opts}, Data) ->
     #connected{transport = Transport, transaction = Transaction} = Data,
     case Transaction of
         0 ->
-            {keep_state, Data, [{reply, From, {error, not_in_transaction}}]};
+            {keep_state, Data, [{reply, From, {error, not_in_transaction}}, {timeout, ?idle_timeout, idle}]};
         N when N > 0 ->
             ok = send_execute_simple(Transport, if
                 Transaction =:= 1 -> "commit";
@@ -429,13 +432,23 @@ ready({call, From}, {rollback, _Opts}, Data) ->
     #connected{transport = Transport, transaction = Transaction} = Data,
     case Transaction of
         0 ->
-            {keep_state, Data, [{reply, From, {error, not_in_transaction}}]};
+            {keep_state, Data, [{reply, From, {error, not_in_transaction}}, {timeout, ?idle_timeout, idle}]};
         N when N > 0 ->
             ok = send_execute_simple(Transport, if
                 Transaction =:= 1 -> "rollback";
                 Transaction > 1 -> ["rollback to savepoint ", ?savepoint(Transaction - 1)]
             end),
             {next_state, #executing_simple{from = From}, Data}
+    end;
+
+ready(cast, reset, Data) ->
+    #connected{transport = Transport, transaction = Transaction} = Data,
+    case Transaction of
+        0 ->
+            {keep_state, Data, {timeout, ?idle_timeout, idle}};
+        T when T > 0 ->
+            ok = send_execute_simple(Transport, "rollback"),
+            {next_state, #executing_simple{}, Data#connected{transaction = 0}}
     end;
 
 ready({call, From}, Request, Data) ->
@@ -644,17 +657,19 @@ executing_simple(internal, #msg_no_data{}, _State, Data) ->
 
 executing_simple(internal, #msg_command_complete{tag = Tag}, State, Data) ->
     #executing_simple{from = From} = State,
-    {next_state, syncing, Data#connected{
-        transaction = case Tag of
-            <<"COMMIT">> -> 0;
-            <<"ROLLBACK">> -> Data#connected.transaction - 1;
-            <<"BEGIN">> -> 1;
-            <<"START TRANSACTION">> -> 1;
-            <<"SAVEPOINT">> -> Data#connected.transaction + 1;
-            <<"RELEASE">> -> Data#connected.transaction - 1;
-            <<"PREPARE TRANSACTION">> -> 0
-        end
-    }, {reply, From, ok}};
+    NewTransaction = case Tag of
+        <<"COMMIT">> -> 0;
+        <<"ROLLBACK">> -> max(0, Data#connected.transaction - 1); %% needed because of the reset/1 implementation
+        <<"BEGIN">> -> 1;
+        <<"START TRANSACTION">> -> 1;
+        <<"SAVEPOINT">> -> Data#connected.transaction + 1;
+        <<"RELEASE">> -> Data#connected.transaction - 1;
+        <<"PREPARE TRANSACTION">> -> 0
+    end,
+    {next_state, syncing, Data#connected{transaction = NewTransaction}, case From of
+        undefined -> [];
+        _ -> {reply, From, ok}
+    end};
 
 executing_simple(internal, #msg_error_response{fields = Fields}, State, Data) ->
     #executing_simple{from = From} = State,
@@ -676,7 +691,9 @@ syncing(EventType, EventContent, Data) ->
 %% Extra handlers
 
 handle_event({call, _}, _, Data) ->
-    {keep_state, Data, [postpone]};
+    {keep_state, Data, postpone};
+handle_event(cast, _, Data) ->
+    {keep_state, Data, postpone};
 handle_event(_, _, Data) ->
     {keep_state, Data}.
 
