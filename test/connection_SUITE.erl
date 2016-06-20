@@ -44,7 +44,7 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(_Case, Config) ->
-    {ok, Conn} = pgsql_connection:start_link(#{}, #{user => "postgres", password => ""}),
+    {ok, Conn} = pgsql_connection:start_link(#{reconnect => false}, #{user => "postgres", password => ""}),
     [{conn, Conn} | Config].
 
 end_per_testcase(_Case, Config) ->

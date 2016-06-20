@@ -23,9 +23,7 @@
 
 
 -include("./pgsql_protocol_messages.hrl").
--define(idle_timeout, timer:seconds(5)).
--define(backoff_init, timer:seconds(1)).
--define(backoff_max, timer:seconds(30)).
+-define(idle_timeout, 5000).
 -define(identifier_prefix, ("erlang_pgsql_" ?MODULE_STRING)).
 -define(savepoint(Id), [?identifier_prefix, "_savepoint_", integer_to_list(Id)]).
 -define(record_to_map(Tag, Value), maps:from_list(
@@ -45,7 +43,7 @@
 %% Data records
 -record(disconnected, {
     options :: #options{},
-    backoff_delay = ?backoff_init :: pos_integer(),
+    backoff :: backoff:backoff() | undefined,
     backoff_timer = undefined :: reference() | undefined
 }).
 
@@ -93,7 +91,8 @@
     port => inet:port_number(),
     ssl => disable | prefer | require,
     ssl_options => [ssl:ssl_option()],
-    connect_timeout => timeout()
+    connect_timeout => timeout(),
+    reconnect => false | {backoff, Min :: non_neg_integer(), Max :: pos_integer()}
 }.
 -type database_options() :: #{
     user => string(),
@@ -102,7 +101,22 @@
     application_name => string()
 }.
 start_link(TransportOpts, DatabaseOpts) ->
-    gen_statem:start_link(?MODULE, {TransportOpts, DatabaseOpts}, []).
+    User = maps:get(user, DatabaseOpts, "postgres"),
+    TransportOpts1 = maps:merge(#{
+        host => "localhost",
+        port => 5432,
+        ssl => prefer,
+        ssl_options => [],
+        connect_timeout => 15000,
+        reconnect => {backoff, 200, 15000}
+    }, TransportOpts),
+    DatabaseOpts1 = maps:merge(#{
+        user => User,
+        password => "",
+        database => User,
+        application_name => "erlang-pgsql"
+    }, DatabaseOpts),
+    gen_statem:start_link(?MODULE, {TransportOpts1, DatabaseOpts1}, []).
 
 -spec stop(Conn) -> ok when Conn :: connection().
 stop(Conn) ->
@@ -153,8 +167,6 @@ execute_fold(Fun, Acc, ReqRef, Mref) ->
     receive
         {ReqRef, row, Row} ->
             execute_fold(Fun, Fun(Row, Acc), ReqRef, Mref);
-        {ReqRef, fields, Fields} ->
-            execute_fold(Fun, Fun(fields, Fields, Acc), ReqRef, Mref);
         {ReqRef, error, Reason} ->
             {error, Reason};
         {ReqRef, done, _Tag} ->
@@ -188,23 +200,14 @@ transaction(Conn, Fun, Opts) ->
 
 
 init({TransportOpts, DatabaseOpts}) ->
-    User = maps:get(user, DatabaseOpts, "postgres"),
     Options = #options{
-        transport = maps:merge(#{
-            host => "localhost",
-            port => 5432,
-            ssl => prefer,
-            ssl_options => [],
-            connect_timeout => 5000
-        }, TransportOpts),
-        database = maps:merge(#{
-            user => User,
-            password => "",
-            database => User,
-            application_name => "erlang-pgsql"
-        }, DatabaseOpts)
+        transport = TransportOpts,
+        database = DatabaseOpts
     },
-    {handle_event_function, disconnected, #disconnected{options = Options}, {next_event, internal, connect}}.
+    {handle_event_function,
+        disconnected,
+        #disconnected{options = Options, backoff = backoff(TransportOpts)},
+        {next_event, internal, connect}}.
 
 terminate(_Reason, _State, _Data) ->
     ok.
@@ -223,16 +226,15 @@ format_status_data(#disconnected{} = Data) ->
     ?record_to_map(disconnected, Data).
 
 
-handle_event(info, {Tag, Source, Data}, _, #connected{transport_tags = {Tag, _, _, Source}} = Connected) ->
+handle_event(info, {DataTag, Source, Data}, _, #connected{transport_tags = {DataTag, _, _, Source}} = Connected) ->
     #connected{transport = Transport, buffer = Buffer} = Connected,
     {Messages, Rest} = pgsql_protocol:decode_messages(<<Buffer/binary, Data/binary>>),
     ok = pgsql_transport:set_opts(Transport, [{active, once}]),
     {keep_state, Connected#connected{buffer = Rest}, [{next_event, internal, Message} || Message <- Messages]};
-handle_event(info, {Tag, Source}, _, #connected{transport_tags = {_, Closed, Error, Source}} = Connected)
-        when Tag =:= Closed; Tag =:= Error ->
-    #connected{options = Options, transport = Transport} = Connected,
-    _ = pgsql_transport:close(Transport),
-    {next_state, disconnected, #disconnected{options = Options}, {next_event, internal, connect}};
+handle_event(info, {ClosedTag, Source}, _, #connected{transport_tags = {_, ClosedTag, _, Source}} = Connected) ->
+    handle_disconnect(ClosedTag, Connected);
+handle_event(info, {ErrorTag, Source, Reason}, _, #connected{transport_tags = {_, _, ErrorTag, Source}} = Connected) ->
+    handle_disconnect({ErrorTag, Reason}, Connected);
 handle_event(EventType, EventContent, disconnected, Data) ->
     disconnected(EventType, EventContent, Data);
 handle_event(EventType, EventContent, authenticating, Data) ->
@@ -258,7 +260,7 @@ handle_event(EventType, EventContent, syncing, Data) ->
 %%%% Disconnected
 
 disconnected(internal, connect, Data) ->
-    #disconnected{options = Options} = Data,
+    #disconnected{options = Options, backoff = Backoff} = Data,
     #options{transport = TransportOpts, database = DatabaseOpts} = Options,
 
     case do_connect(TransportOpts, DatabaseOpts) of
@@ -268,13 +270,19 @@ disconnected(internal, connect, Data) ->
                 transport = Transport,
                 transport_tags = pgsql_transport:get_tags(Transport)
             }};
+        {error, Error} when Backoff =:= undefined ->
+            {stop, Error};
         {error, Error} ->
+            {_, NewBackoff} = backoff:fail(Backoff),
             error_logger:error_msg("~s: failed to connect with error: ~p~n", [?MODULE, Error]),
-            {keep_state, do_backoff(Data)}
+            {keep_state, Data#disconnected{
+                backoff = NewBackoff,
+                backoff_timer = backoff:fire(Backoff)
+            }}
     end;
 
 disconnected(info, {timeout, Ref, reconnect}, #disconnected{backoff_timer = Ref} = Data) ->
-    {keep_state, Data, {next_event, internal, connect}};
+    {keep_state, Data#disconnected{backoff_timer = undefined}, {next_event, internal, connect}};
 
 disconnected({call, From}, _, Data) ->
     {keep_state, Data, {reply, From, {error, disconnected}}};
@@ -302,12 +310,6 @@ do_connect(TransportOpts, DatabaseOpts) ->
             Error
     end.
 
-do_backoff(#disconnected{backoff_delay = BackoffDelay} = Data) ->
-    Data#disconnected{
-        backoff_delay = backoff:rand_increment(BackoffDelay, ?backoff_max),
-        backoff_timer = reconnect_timout(BackoffDelay)
-    }.
-
 %%%% Authenticating
 
 authenticating(internal, #msg_auth{type = ok}, Data) ->
@@ -323,7 +325,7 @@ authenticating(internal, #msg_auth{type = Type, data = AuthData}, Data) ->
     end;
 
 authenticating(internal, #msg_error_response{fields = Fields}, Data) ->
-    handle_fatal_error(convert_error(Fields), Data);
+    handle_disconnect(convert_error(Fields), Data);
 
 authenticating(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -358,7 +360,7 @@ configuring(internal, #msg_notice_response{}, Data) ->
     {keep_state, Data};
 
 configuring(internal, #msg_error_response{fields = Fields}, Data) ->
-    handle_fatal_error(convert_error(Fields), Data);
+    handle_disconnect(convert_error(Fields), Data);
 
 configuring(EventType, EventContent, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -554,7 +556,7 @@ updating_types(internal, #msg_command_complete{}, Updating, Data) ->
     }};
 
 updating_types(internal, #msg_error_response{fields = Fields}, _, Data) ->
-    handle_fatal_error(convert_error(Fields), Data);
+    handle_disconnect(convert_error(Fields), Data);
 
 updating_types(EventType, EventContent, _, Data) ->
     handle_event(EventType, EventContent, Data).
@@ -678,10 +680,20 @@ handle_event({call, _}, _, Data) ->
 handle_event(_, _, Data) ->
     {keep_state, Data}.
 
-handle_fatal_error(Error, #connected{options = Options, transport = Transport}) ->
+handle_disconnect(Error, #connected{options = Options, transport = Transport}) ->
+    #options{transport = TransportOpts} = Options,
     _ = pgsql_transport:close(Transport),
-    error_logger:error_msg("~s: an error occured: ~p~n", [?MODULE, Error]),
-    {next_state, disconnected, do_backoff(#disconnected{options = Options})}.
+    case backoff(TransportOpts) of
+        undefined ->
+            {stop, Error};
+        Backoff ->
+            error_logger:error_msg("~s: an error occured: ~p~n", [?MODULE, Error]),
+            {next_state, disconnected, #disconnected{
+                options = Options,
+                backoff = Backoff,
+                backoff_timer = backoff:fire(Backoff)
+            }}
+    end.
 
 
 %% Encode/Decode
@@ -703,8 +715,10 @@ decode_row(Types, Values, Codec) ->
 send(Transport, Messages) ->
     pgsql_transport:send(Transport, pgsql_protocol:encode_messages(Messages)).
 
-reconnect_timout(BackoffDelay) ->
-    erlang:start_timer(BackoffDelay, self(), reconnect).
+backoff(#{reconnect := {backoff, Min, Max}}) ->
+    backoff:type(backoff:init(Min, Max, self(), reconnect), jitter);
+backoff(#{reconnect := false}) ->
+    undefined.
 
 request_timeout(infinity) ->
     undefined;
