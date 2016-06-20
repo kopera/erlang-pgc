@@ -139,7 +139,7 @@ prepare(Conn, Name, Statement, Opts) ->
 unprepare(Conn, #statement{name = Name}, Opts) ->
     gen_statem:cast(Conn, {unprepare, Name, Opts}).
 
--spec execute(Conn, Statement, Params, Opts) -> {ok, Result} | {error, term()} when
+-spec execute(Conn, Statement, Params, Opts) -> Result | {error, term()} when
     Conn :: connection(),
     Statement :: statement() | prepared_statement(),
     Params :: [any()],
@@ -154,7 +154,7 @@ execute(Conn, Statement, Params, Opts) ->
             Mref = start_monitor(C),
             try execute_fold(Fold, [], Ref, Mref) of
                 {ok, Command, Count, Rows} ->
-                    {ok, #{command => Command, columns => FieldNames, rows => Rows, rows_count => Count}};
+                    #{command => Command, columns => FieldNames, rows => Rows, rows_count => Count};
                 {error, _} = Error ->
                     Error
             after
