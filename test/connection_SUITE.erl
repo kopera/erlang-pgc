@@ -55,15 +55,15 @@ end_per_testcase(_Case, Config) ->
 %% Test cases
 
 iodata(Config) ->
-    {ok, [_], [{123}]} = execute([["S", $E, [<<"LEC">> | "T"], " ", "123"], []], Config).
+    {ok, #{rows := [{123}]}} = execute([["S", $E, [<<"LEC">> | "T"], " ", "123"], []], Config).
 
 timeout(Config) ->
     {error, timeout} = execute("select pg_sleep(0.1)", [], #{timeout => 50}, Config),
-    {ok, [_], [{void}]} = execute("select pg_sleep(0.1)", [], #{timeout => 200}, Config).
+    {ok, #{rows := [{void}]}} = execute("select pg_sleep(0.1)", [], #{timeout => 200}, Config).
 
 hibernate(Config) ->
     Conn = ?config(conn, Config),
-    {ok, _, _} = execute("select * from pg_user", Config),
+    {ok, #{}} = execute("select * from pg_user", Config),
     [{memory, M1}] = erlang:process_info(Conn, [memory]),
     timer:sleep(timer:seconds(6)),
     [{current_function, {erlang, hibernate, _}}] = erlang:process_info(Conn, [current_function]),
@@ -73,7 +73,7 @@ hibernate(Config) ->
 
 binref_leak(Config) ->
     Conn = ?config(conn, Config),
-    {ok, _, _} = execute("select * from pg_user", Config),
+    {ok, #{}} = execute("select * from pg_user", Config),
     _ = erlang:garbage_collect(Conn),
     [{binary, []}] = erlang:process_info(Conn, [binary]).
 

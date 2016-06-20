@@ -139,14 +139,12 @@ prepare(Conn, Name, Statement, Opts) ->
 unprepare(Conn, #statement{name = Name}, Opts) ->
     gen_statem:cast(Conn, {unprepare, Name, Opts}).
 
--spec execute(Conn, Statement, Params, Opts) -> {ok, Fields, Rows} | {error, term()} when
+-spec execute(Conn, Statement, Params, Opts) -> {ok, Result} | {error, term()} when
     Conn :: connection(),
     Statement :: statement() | prepared_statement(),
     Params :: [any()],
     Opts :: #{timeout => timeout()},
-    Fields :: [binary()],
-    Rows :: [Row],
-    Row :: [any()].
+    Result :: #{columns := [binary()], rows := [tuple()]}.
 execute(Conn, Statement, Params, Opts) ->
     case gen_statem:call(Conn, {execute, Statement, Params, Opts}) of
         {ok, C, Ref, FieldNames, FieldTypes, Codec} ->
@@ -155,8 +153,10 @@ execute(Conn, Statement, Params, Opts) ->
             end,
             Mref = start_monitor(C),
             try execute_fold(Fold, [], Ref, Mref) of
-                {ok, Rows} -> {ok, FieldNames, lists:reverse(Rows)};
-                {error, _} = Error -> Error
+                {ok, Command, Count, Rows} ->
+                    {ok, #{command => Command, columns => FieldNames, rows => Rows, rows_count => Count}};
+                {error, _} = Error ->
+                    Error
             after
                 cancel_monitor(Mref)
             end;
@@ -170,8 +170,9 @@ execute_fold(Fun, Acc, ReqRef, Mref) ->
             execute_fold(Fun, Fun(Row, Acc), ReqRef, Mref);
         {ReqRef, error, Reason} ->
             {error, Reason};
-        {ReqRef, done, _Tag} ->
-            {ok, Acc};
+        {ReqRef, done, Tag} ->
+            {Command, Count} = decode_tag(Tag),
+            {ok, Command, Count, lists:reverse(Acc)};
         {'DOWN', Mref, _, _, Reason} ->
             exit(Reason)
     end.
@@ -185,8 +186,10 @@ transaction(Conn, Fun, Opts) ->
         ok ->
             try
                 Result = Fun(),
-                ok = gen_statem:call(Conn, {commit, Opts}),
-                Result
+                case gen_statem:call(Conn, {commit, Opts}) of
+                    ok -> Result;
+                    {error, _} = CommitError -> throw(CommitError)
+                end
             catch
                 throw:Error ->
                     ok = gen_statem:call(Conn, {rollback, Opts}),
@@ -726,6 +729,33 @@ decode_row(Types, Values, Codec) ->
         (_Type, null) -> null;
         (Type, Value) -> pgsql_codec:decode(Type, Value, Codec)
     end, Types, Values)).
+
+decode_tag(<<"SELECT ", Count/binary>>) ->
+    {select, binary_to_integer(Count)};
+decode_tag(<<"INSERT ", Rest/binary>>) ->
+    [_, Count] = binary:split(Rest, <<" ">>),
+    {insert, binary_to_integer(Count)};
+decode_tag(<<"UPDATE ", Count/binary>>) ->
+    {update, binary_to_integer(Count)};
+decode_tag(<<"DELETE ", Count/binary>>) ->
+    {delete, binary_to_integer(Count)};
+decode_tag(<<"FETCH ", Count/binary>>) ->
+    {fetch, binary_to_integer(Count)};
+decode_tag(<<"MOVE ", Count/binary>>) ->
+    {move, binary_to_integer(Count)};
+decode_tag(<<"COPY ", Count/binary>>) ->
+    {copy, binary_to_integer(Count)};
+decode_tag(Other) ->
+    decode_tag(Other, <<>>).
+
+decode_tag(<<>>, Acc) ->
+    {binary_to_atom(Acc, utf8), undefined};
+decode_tag(<<" ", Rest/binary>>, Acc) ->
+    decode_tag(Rest, <<Acc/binary, "_">>);
+decode_tag(<<C, Rest/binary>>, Acc) when C >= $A, C =< $Z ->
+    decode_tag(Rest, <<Acc/binary, (C + 32)>>);
+decode_tag(<<C, Rest/binary>>, Acc) ->
+    decode_tag(Rest, <<Acc/binary, C>>).
 
 %% Helpers
 
