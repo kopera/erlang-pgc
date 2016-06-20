@@ -178,13 +178,13 @@ execute_fold(Fun, Acc, ReqRef, Mref) ->
 
 -spec transaction(Conn, Fun, Opts) -> Result | {error, term()} when
     Conn :: connection(),
-    Fun :: fun((Conn) -> Result),
+    Fun :: fun(() -> Result),
     Opts :: map().
 transaction(Conn, Fun, Opts) ->
     case gen_statem:call(Conn, {transaction, Opts}) of
         ok ->
             try
-                Result = Fun(Conn),
+                Result = Fun(),
                 ok = gen_statem:call(Conn, {commit, Opts}),
                 Result
             catch

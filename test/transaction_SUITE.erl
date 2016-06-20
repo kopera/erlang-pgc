@@ -53,13 +53,15 @@ end_per_testcase(_Case, Config) ->
 %% Test cases
 
 transaction_commit(Config) ->
-    {ok, 1} = pgsql_connection:transaction(?config(conn, Config), fun (Conn) ->
+    Conn = ?config(conn, Config),
+    {ok, 1} = pgsql_connection:transaction(Conn, fun () ->
         {ok, [_], [{Value}]} = pgsql_connection:execute(Conn, "SELECT 1", [], #{}),
         {ok, Value}
     end, #{}).
 
 transaction_rollback(Config) ->
-    {ok, 1} = pgsql_connection:transaction(?config(conn, Config), fun (Conn) ->
+    Conn = ?config(conn, Config),
+    {ok, 1} = pgsql_connection:transaction(Conn, fun () ->
         {ok, [_], [{Value}]} = pgsql_connection:execute(Conn, "SELECT 1", [], #{}),
         throw({ok, Value})
     end, #{}).
@@ -71,10 +73,10 @@ transaction_nesting(Config) ->
         name varchar NOT NULL
     )", [], #{}),
 
-    ok = pgsql_connection:transaction(Conn, fun (Conn) ->
+    ok = pgsql_connection:transaction(Conn, fun () ->
         {ok, _, _} = pgsql_connection:execute(Conn, "INSERT INTO fruits (id, name) VALUES (1, 'melon')", [], #{}),
         {ok, [_, _], [{1, <<"melon">>}]} = pgsql_connection:execute(Conn, "SELECT id, name FROM fruits", [], #{}),
-        oops = pgsql_connection:transaction(Conn, fun (Conn) ->
+        oops = pgsql_connection:transaction(Conn, fun () ->
             {ok, _, _} = pgsql_connection:execute(Conn, "INSERT INTO fruits (id, name) VALUES (2, 'orange'), (3, 'date'), (4, 'olive')", [], #{}),
             {ok, [_, _], [{1, <<"melon">>}, {2, <<"orange">>}, {3, <<"date">>}, {4, <<"olive">>}]}
                 = pgsql_connection:execute(Conn, "SELECT id, name FROM fruits ORDER BY id ASC", [], #{}),
