@@ -8,7 +8,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"float8send">>].
+    [float8send].
 
 encode(_Type, 'NaN', _Codec, _Opts) ->
     <<127, 248, 0, 0, 0, 0, 0, 0>>;
@@ -22,7 +22,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"float8recv">>].
+    [float8recv].
 
 decode(_Type, <<127, 248, 0, 0, 0, 0, 0, 0>>, _Codec, _Opts) ->
     'NaN';

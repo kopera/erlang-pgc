@@ -6,8 +6,7 @@
         kernel,
         stdlib,
         crypto,
-        ssl,
-        gen_db_client
+        ssl
     ]},
     {mod, {pgsql_app, []}},
     {registered, [

@@ -13,8 +13,8 @@
 
 encodes(_Opts) ->
     [
-        <<"oidsend">>, <<"xidsend">>, <<"cidsend">>, <<"regprocsend">>, <<"regproceduresend">>,
-        <<"regopersend">>, <<"regoperatorsend">>, <<"regclasssend">>, <<"regtypesend">>
+        oidsend, xidsend, cidsend, regprocsend, regproceduresend,
+        regopersend, regoperatorsend, regclasssend, regtypesend
     ].
 
 encode(_Type, Value, _Codec, _Opts) when is_integer(Value), Value >= 0, Value =< 4294967295 ->
@@ -24,8 +24,8 @@ encode(_Type, Value, _Codec, _Opts) ->
 
 decodes(_Opts) ->
     [
-        <<"oidrecv">>, <<"xidrecv">>, <<"cidrecv">>, <<"regprocrecv">>, <<"regprocedurerecv">>,
-        <<"regoperrecv">>, <<"regoperatorrecv">>, <<"regclassrecv">>, <<"regtyperecv">>
+        oidrecv, xidrecv, cidrecv, regprocrecv, regprocedurerecv,
+        regoperrecv, regoperatorrecv, regclassrecv, regtyperecv
     ].
 
 decode(_Type, <<Value:32/integer>>, _Codec, _Opts) ->

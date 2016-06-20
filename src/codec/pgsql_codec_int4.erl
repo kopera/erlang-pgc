@@ -8,7 +8,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"int4send">>].
+    [int4send].
 
 encode(_Type, Value, _Codec, _Opts) when is_integer(Value), Value >= -2147483648, Value =< 2147483647 ->
     <<Value:32/signed-integer>>;
@@ -16,7 +16,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"int4recv">>].
+    [int4recv].
 
 decode(_Type, <<Value:32/signed-integer>>, _Codec, _Opts) ->
     Value.

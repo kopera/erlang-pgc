@@ -1,4 +1,4 @@
--module(gen_db_client_connections).
+-module(pgsql_connections).
 -export([
     checkout/1,
     checkout/2,
@@ -20,6 +20,13 @@
     code_change/3
 ]).
 
+-export_type([
+    name/0,
+    start_options/0,
+    connections/0,
+    connections_ref/0
+]).
+
 -record(connection, {
     pid = self() :: pid(),
     monitor = make_ref() :: reference(),
@@ -36,21 +43,33 @@
     limit :: pos_integer()
 }).
 
+-type connections() :: pid().
+-type connections_ref() ::
+      pid()
+    | (LocalName :: atom())
+    | {Name :: atom(), Node :: atom()}
+    | {'global', GlobalName :: term()}
+    | {'via', RegMod :: module(), ViaName :: term()}.
+
 -spec start_link(pid(), start_options()) -> {ok, connections()}.
 -type start_options() :: #{limit => pos_integer()}.
--type connections() :: pid().
 start_link(Supervisor, Opts) ->
     proc_lib:start_link(?MODULE, init, [[self(), Supervisor, Opts]]).
 
+-spec start_link(pid(), name(), start_options()) -> {ok, connections()}.
+-type name() ::
+      {'global', GlobalName :: term()}
+    | {'via', RegMod :: module(), Name :: term()}
+    | {'local', atom()}.
 start_link(Supervisor, Name, Opts) ->
     proc_lib:start_link(?MODULE, init, [[self(), Supervisor, Name, Opts]]).
 
 
--spec checkout(connections()) -> {ok, pid()} | {error, timeout}.
+-spec checkout(connections_ref()) -> {ok, pgsql_connection:connection()} | {error, timeout}.
 checkout(Connections) ->
     checkout(Connections, 5000).
 
--spec checkout(connections(), timeout()) -> {ok, pid()} | {error, timeout}.
+-spec checkout(connections_ref(), timeout()) -> {ok, pgsql_connection:connection()} | {error, timeout}.
 checkout(Connections, Timeout) ->
     Ref = make_ref(),
     try gen_server:call(Connections, {checkout, Ref}, Timeout) of
@@ -64,7 +83,7 @@ checkout(Connections, Timeout) ->
             erlang:raise(Class, Reason, erlang:get_stacktrace())
     end.
 
--spec checkin(connections(), pid()) -> ok.
+-spec checkin(connections_ref(), pid()) -> ok.
 checkin(Connections, Connection) when is_pid(Connection) ->
     gen_server:cast(Connections, {checkin, Connection}).
 
@@ -112,7 +131,7 @@ register_name({via, Module, Name}) ->
 %% @hidden
 handle_call({checkout, Req}, {FromPid, _} = From, State) ->
     #state{
-        connections_sup = Supervisor,
+        connections_sup = ConnectionsSup,
         used = Used,
         available = Available,
         size = Size,
@@ -125,7 +144,7 @@ handle_call({checkout, Req}, {FromPid, _} = From, State) ->
                 available = Left
             }};
         [] when Size < Limit ->
-            {ok, Connection} = start_connection(Supervisor),
+            {ok, Connection} = start_connection(ConnectionsSup),
             {reply, {ok, Connection#connection.pid}, State#state{
                 used = [checkout_connection(Req, FromPid, Connection) | Used],
                 size = Size + 1
@@ -197,24 +216,22 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
-start_connection(Supervisor) ->
-    {ok, Pid} = supervisor:start_child(Supervisor, []),
+start_connection(ConnectionsSup) ->
+    {ok, Pid} = supervisor:start_child(ConnectionsSup, []),
     {ok, #connection{
         pid = Pid,
         monitor = erlang:monitor(process, Pid)
     }}.
 
-checkout_connection(Req, UserPid, #connection{pid = Pid, user_pid = undefined, user_monitor = undefined} = Connection) ->
-    gen_db_client_connections:checkout(Pid, UserPid),
+checkout_connection(Req, UserPid, #connection{user_pid = undefined, user_monitor = undefined} = Connection) ->
     Connection#connection{
         req = Req,
         user_pid = UserPid,
         user_monitor = erlang:monitor(process, UserPid)
     }.
 
-checkin_connection(#connection{pid = Pid, user_pid = UserPid, user_monitor = UserMonitor} = Connection)
-        when is_pid(UserPid), is_reference(UserMonitor) ->
-    gen_db_client_connections:checkin(Pid, UserPid),
+checkin_connection(#connection{pid = Pid, user_pid = UserPid, user_monitor = UserMonitor} = Connection) when is_pid(UserPid), is_reference(UserMonitor) ->
+    pgsql_connection:reset(Pid),
     erlang:demonitor(UserMonitor, [flush]),
     Connection#connection{
         req = undefined,
@@ -235,7 +252,7 @@ handle_waiting(#state{used = Used, available = [Connection | Available]} = State
             State
     end;
 handle_waiting(#state{connections_sup = Sup, used = Used, available = [], size = Size, limit = Limit} = State)
-        when Size < Limit ->
+    when Size < Limit ->
     case queue:out(State#state.waiting) of
         {{value, {Req, {UserPid, _} = ReplyTo}}, Waiting} ->
             {ok, Connection} = start_connection(Sup),

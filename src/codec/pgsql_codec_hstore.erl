@@ -8,7 +8,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"hstore_send">>].
+    [hstore_send].
 
 encode(_Type, Value, _Codec, _Opts) when is_map(Value) ->
     encode_hstore(Value);
@@ -16,7 +16,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"hstore_recv">>].
+    [hstore_recv].
 
 decode(_Type, Data, _Codec, _Opts) ->
     decode_hstore(Data).

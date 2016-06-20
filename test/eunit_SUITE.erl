@@ -2,14 +2,14 @@
 
 -include_lib("common_test/include/ct.hrl").
 -export([
-	all/0
+    all/0
 ]).
 -export([
-	eunit/1
+    eunit/1
 ]).
 
 all() ->
-	[eunit].
+    [eunit].
 
 eunit(_) ->
-	ok = eunit:test({application, pgsql}).
+    ok = eunit:test({application, pgsql}).

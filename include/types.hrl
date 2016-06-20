@@ -1,11 +1,11 @@
 -record(pgsql_type_info, {
     oid :: pgsql_types:oid(),
-    name :: binary(),
-    send :: binary(),
-    recv :: binary(),
+    name :: atom(),
+    send :: atom(),
+    recv :: atom(),
     element :: pgsql_types:oid() | undefined,
     parent :: pgsql_types:oid() | undefined,
-    fields :: [{binary(), pgsql_types:oid()}] | undefined
+    fields :: [{atom(), pgsql_types:oid()}] | undefined
 }).
 
 -record(pgsql_interval, {

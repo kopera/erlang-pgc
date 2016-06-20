@@ -12,7 +12,7 @@
 -define(epoch, 730485). % calendar:date_to_gregorian_days({2000, 1, 1})).
 
 encodes(_Opts) ->
-    [<<"date_send">>].
+    [date_send].
 
 encode(_Type, #pgsql_date{year = Year, month = Month, day = Day} = D, _Codec, _Opts) ->
     Date = {Year, Month, Day},
@@ -24,7 +24,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"date_recv">>].
+    [date_recv].
 
 decode(_Type, <<Days:32/signed-integer>>, _Codec, _Opts) ->
     {Year, Month, Day} = calendar:gregorian_days_to_date(Days + ?epoch),

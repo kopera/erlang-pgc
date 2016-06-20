@@ -15,7 +15,7 @@
 -include("../../include/types.hrl").
 
 encodes(_Opts) ->
-    [<<"array_send">>, <<"int2vectorsend">>, <<"oidvectorsend">>].
+    [array_send, int2vectorsend, oidvectorsend].
 
 encode(#pgsql_type_info{element = ElementOid}, Value, Codec, _Opts) when is_list(Value) ->
     encode_array(Codec, ElementOid, Value);
@@ -23,7 +23,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"array_recv">>, <<"int2vectorrecv">>, <<"oidvectorrecv">>].
+    [array_recv, int2vectorrecv, oidvectorrecv].
 
 decode(_Type, Data, Codec, _Opts) ->
     decode_array(fun (Oid, Element) ->

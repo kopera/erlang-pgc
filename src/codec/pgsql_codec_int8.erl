@@ -8,7 +8,7 @@
 ]).
 
 encodes(_Opts) ->
-    [<<"int8send">>].
+    [int8send].
 
 encode(_Type, Value, _Codec, _Opts) when is_integer(Value), Value >= -9223372036854775808, Value =< 9223372036854775807 ->
     <<Value:64/signed-integer>>;
@@ -16,7 +16,7 @@ encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
 decodes(_Opts) ->
-    [<<"int8recv">>].
+    [int8recv].
 
 decode(_Type, <<Value:64/signed-integer>>, _Codec, _Opts) ->
     Value.
