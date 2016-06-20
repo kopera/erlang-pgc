@@ -52,7 +52,7 @@ child_spec(Id, Name, PoolOpts, TransportOpts, DatabaseOpts) ->
     }.
 
 %% @hidden
-init({pgsql_sup, [Name, PoolOpts, TransportOpts, DatabaseOpts]) ->
+init({pgsql_sup, [Name, PoolOpts, TransportOpts, DatabaseOpts]}) ->
     Flags = #{strategy => one_for_all},
     Children = [
         #{
@@ -66,7 +66,7 @@ init({pgsql_sup, [Name, PoolOpts, TransportOpts, DatabaseOpts]) ->
         }
     ],
     {ok, {Flags, Children}};
-init({connections_sup, [TransportOpts, DatabaseOpts]) ->
+init({connections_sup, [TransportOpts, DatabaseOpts]}) ->
     Flags = #{strategy => simple_one_for_one},
     Children = [
         #{
