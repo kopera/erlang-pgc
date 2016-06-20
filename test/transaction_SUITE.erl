@@ -10,7 +10,8 @@
 
 -export([
     transaction_commit/1,
-    transaction_rollback/1
+    transaction_rollback/1,
+    transaction_nesting/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -23,7 +24,8 @@ groups() ->
     [
         {all, [parallel, shuffle], [
             transaction_commit,
-            transaction_rollback
+            transaction_rollback,
+            transaction_nesting
         ]}
     ].
 
@@ -52,12 +54,33 @@ end_per_testcase(_Case, Config) ->
 
 transaction_commit(Config) ->
     {ok, 1} = pgsql_connection:transaction(?config(conn, Config), fun (Conn) ->
-        {ok, [_], [{Value}]} = pgsql_connection:execute(Conn, "select 1", [], #{}),
+        {ok, [_], [{Value}]} = pgsql_connection:execute(Conn, "SELECT 1", [], #{}),
         {ok, Value}
     end, #{}).
 
 transaction_rollback(Config) ->
     {ok, 1} = pgsql_connection:transaction(?config(conn, Config), fun (Conn) ->
-        {ok, [_], [{Value}]} = pgsql_connection:execute(Conn, "select 1", [], #{}),
+        {ok, [_], [{Value}]} = pgsql_connection:execute(Conn, "SELECT 1", [], #{}),
         throw({ok, Value})
     end, #{}).
+
+transaction_nesting(Config) ->
+    Conn = ?config(conn, Config),
+    {ok, [], []} = pgsql_connection:execute(Conn, "CREATE TEMPORARY TABLE fruits (
+        id integer PRIMARY KEY,
+        name varchar NOT NULL
+    )", [], #{}),
+
+    ok = pgsql_connection:transaction(Conn, fun (Conn) ->
+        {ok, _, _} = pgsql_connection:execute(Conn, "INSERT INTO fruits (id, name) VALUES (1, 'melon')", [], #{}),
+        {ok, [_, _], [{1, <<"melon">>}]} = pgsql_connection:execute(Conn, "SELECT id, name FROM fruits", [], #{}),
+        oops = pgsql_connection:transaction(Conn, fun (Conn) ->
+            {ok, _, _} = pgsql_connection:execute(Conn, "INSERT INTO fruits (id, name) VALUES (2, 'orange'), (3, 'date'), (4, 'olive')", [], #{}),
+            {ok, [_, _], [{1, <<"melon">>}, {2, <<"orange">>}, {3, <<"date">>}, {4, <<"olive">>}]}
+                = pgsql_connection:execute(Conn, "SELECT id, name FROM fruits ORDER BY id ASC", [], #{}),
+            throw(oops) %% Rollback savepoint
+        end, #{}),
+        {ok, [_, _], [{1, <<"melon">>}]} = pgsql_connection:execute(Conn, "SELECT id, name FROM fruits", [], #{}),
+        ok
+    end, #{}),
+    {ok, [_, _], [{1, <<"melon">>}]} = pgsql_connection:execute(Conn, "SELECT id, name FROM fruits", [], #{}).
