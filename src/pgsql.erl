@@ -14,17 +14,16 @@
 ]).
 
 
-activity(Client, Fun) ->
-    activity(Client, Fun, 5000).
+activity(Name, Fun) ->
+    activity(Name, Fun, 5000).
 
-activity(Client, Fun, Timeout) ->
-    [Connections] = [Pid || {connections, Pid, _, _} <- supervisor:which_children(Client)],
-    case pgsql_connections:checkout(Connections, Timeout) of
+activity(Name, Fun, Timeout) ->
+    case pgsql_connections:checkout(Name, Timeout) of
         {ok, Connection} ->
             try Fun(Connection) of
                 Result -> Result
             after
-                pgsql_connections:checkin(Connections, Connection)
+                pgsql_connections:checkin(Name, Connection)
             end;
         {error, timeout} = Error ->
             exit(Error)
