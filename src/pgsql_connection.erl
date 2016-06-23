@@ -1,12 +1,14 @@
 -module(pgsql_connection).
 -export([
     start_link/2,
+    start_link/3,
     stop/1
 ]).
 
 -export([
     prepare/4,
     unprepare/3,
+    execute/3,
     execute/4,
     transaction/3,
     reset/1
@@ -32,8 +34,8 @@
 
 -record(options, {
     transport :: transport_options(),
-    database :: database_options()
-}).
+    database :: database_options(),
+    connection :: connection_options()}).
 
 -record(statement, {
     name :: binary(),
@@ -85,8 +87,11 @@
 -type statement() :: iodata().
 -type prepared_statement() :: #statement{}.
 
-
 -spec start_link(transport_options(), database_options()) -> {ok, connection()}.
+start_link(TransportOpts, DatabaseOpts) ->
+    start_link(TransportOpts, DatabaseOpts, #{}).
+
+-spec start_link(transport_options(), database_options(), connection_options()) -> {ok, connection()}.
 -type transport_options() :: #{
     host => string(),
     port => inet:port_number(),
@@ -101,7 +106,11 @@
     database => string(),
     application_name => string()
 }.
-start_link(TransportOpts, DatabaseOpts) ->
+-type connection_options() :: #{
+    codecs => [module()],
+    codecs_options => map()
+}.
+start_link(TransportOpts, DatabaseOpts, Opts) ->
     User = maps:get(user, DatabaseOpts, "postgres"),
     TransportOpts1 = maps:merge(#{
         host => "localhost",
@@ -117,7 +126,11 @@ start_link(TransportOpts, DatabaseOpts) ->
         database => User,
         application_name => "erlang-pgsql"
     }, DatabaseOpts),
-    gen_statem:start_link(?MODULE, {TransportOpts1, DatabaseOpts1}, []).
+    ConnectionOpts = maps:merge(#{
+        codecs => [],
+        codecs_options => #{}
+    }, Opts),
+    gen_statem:start_link(?MODULE, {TransportOpts1, DatabaseOpts1, ConnectionOpts}, []).
 
 -spec stop(Conn) -> ok when Conn :: connection().
 stop(Conn) ->
@@ -139,12 +152,20 @@ prepare(Conn, Name, Statement, Opts) ->
 unprepare(Conn, #statement{name = Name}, Opts) ->
     gen_statem:cast(Conn, {unprepare, Name, Opts}).
 
+-spec execute(Conn, Statement, Params) -> Result | {error, term()} when
+    Conn :: connection(),
+    Statement :: statement() | prepared_statement(),
+    Params :: [any()],
+    Result :: #{command := atom(), columns := [binary()], rows := [tuple()], rows_count => non_neg_integer()}.
+execute(Conn, Statement, Params) ->
+    execute(Conn, Statement, Params, #{}).
+
 -spec execute(Conn, Statement, Params, Opts) -> Result | {error, term()} when
     Conn :: connection(),
     Statement :: statement() | prepared_statement(),
     Params :: [any()],
     Opts :: #{timeout => timeout()},
-    Result :: #{columns := [binary()], rows := [tuple()]}.
+    Result :: #{command := atom(), columns := [binary()], rows := [tuple()]}.
 execute(Conn, Statement, Params, Opts) ->
     case gen_statem:call(Conn, {execute, Statement, Params, Opts}) of
         {ok, C, Ref, FieldNames, FieldTypes, Codec} ->
@@ -153,6 +174,8 @@ execute(Conn, Statement, Params, Opts) ->
             end,
             Mref = start_monitor(C),
             try execute_fold(Fold, [], Ref, Mref) of
+                {ok, Command, undefined, Rows} ->
+                    #{command => Command, columns => FieldNames, rows => Rows};
                 {ok, Command, Count, Rows} ->
                     #{command => Command, columns => FieldNames, rows => Rows, rows_count => Count};
                 {error, _} = Error ->
@@ -205,10 +228,11 @@ transaction(Conn, Fun, Opts) ->
 reset(Conn) ->
     gen_statem:cast(Conn, reset).
 
-init({TransportOpts, DatabaseOpts}) ->
+init({TransportOpts, DatabaseOpts, ConnectionOpts}) ->
     Options = #options{
         transport = TransportOpts,
-        database = DatabaseOpts
+        database = DatabaseOpts,
+        connection = ConnectionOpts
     },
     {handle_event_function,
         disconnected,
@@ -351,8 +375,11 @@ send_authenticate_reply(_Transport, Other, _Salt, _User, _Password) ->
 %%%% Configuring
 
 configuring(internal, #msg_ready_for_query{}, Data) ->
+    #connected{options = Options} = Data,
+    #options{connection = #{codecs := Codecs, codecs_options := CodecsOptions}} = Options,
+
     {next_state, ready, Data#connected{
-        codec = pgsql_codec:new(Data#connected.parameters, #{})
+        codec = pgsql_codec:new(Data#connected.parameters, CodecsOptions, Codecs)
     }, [{timeout, ?idle_timeout, idle}]};
 
 configuring(internal, #msg_backend_key_data{id = Id, secret = Secret}, Data) ->

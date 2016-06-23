@@ -38,10 +38,32 @@
 -opaque codec() :: codec().
 
 -include("../../include/types.hrl").
+-define(default_codecs, [
+    pgsql_codec_array,
+    pgsql_codec_binary,
+    pgsql_codec_bool,
+    pgsql_codec_date,
+    pgsql_codec_datetime,
+    pgsql_codec_enum,
+    pgsql_codec_float4,
+    pgsql_codec_float8,
+    pgsql_codec_hstore,
+    pgsql_codec_int2,
+    pgsql_codec_int4,
+    pgsql_codec_int8,
+    pgsql_codec_interval,
+    pgsql_codec_oid,
+    pgsql_codec_record,
+    pgsql_codec_text,
+    pgsql_codec_time,
+    pgsql_codec_uuid,
+    pgsql_codec_void
+]).
 
 
 -spec new(params(), options(), [module()]) -> codec().
-new(Parameters, Options, Modules) ->
+new(Parameters, Options, ExtraCodecs) ->
+    Modules = ExtraCodecs ++ ?default_codecs,
     #codec{
         parameters = Parameters,
         options = Options,
@@ -49,27 +71,7 @@ new(Parameters, Options, Modules) ->
     }.
 
 new(Parameters, Options) ->
-    new(Parameters, Options, [
-        pgsql_codec_array,
-        pgsql_codec_binary,
-        pgsql_codec_bool,
-        pgsql_codec_date,
-        pgsql_codec_datetime,
-        pgsql_codec_enum,
-        pgsql_codec_float4,
-        pgsql_codec_float8,
-        pgsql_codec_hstore,
-        pgsql_codec_int2,
-        pgsql_codec_int4,
-        pgsql_codec_int8,
-        pgsql_codec_interval,
-        pgsql_codec_oid,
-        pgsql_codec_record,
-        pgsql_codec_text,
-        pgsql_codec_time,
-        pgsql_codec_uuid,
-        pgsql_codec_void
-    ]).
+    new(Parameters, Options, []).
 
 mod_init(Module, Parameters, Options) ->
     case erlang:function_exported(Module, init, 2) of
