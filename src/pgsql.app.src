@@ -8,9 +8,6 @@
         crypto,
         ssl
     ]},
-    {mod, {pgsql_app, []}},
-    {registered, [
-        pgsql_sup
-    ]},
+    {registered, []},
     {env, []}
 ]}.
