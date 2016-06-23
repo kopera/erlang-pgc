@@ -783,5 +783,5 @@ start_monitor(Pid) ->
 cancel_monitor(Ref) ->
     erlang:demonitor(Ref).
 
-convert_error(#{code := <<"57014">>}) -> timeout; %% cancelled
+convert_error(#{name := query_canceled}) -> timeout;
 convert_error(Other) -> Other.
