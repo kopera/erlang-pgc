@@ -6,7 +6,8 @@
         kernel,
         stdlib,
         crypto,
-        ssl
+        ssl,
+        backoff
     ]},
     {registered, []},
     {env, []}
