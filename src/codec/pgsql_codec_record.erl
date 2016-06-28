@@ -1,6 +1,7 @@
 -module(pgsql_codec_record).
 -behaviour(pgsql_codec).
 -export([
+    init/2,
     encodes/1,
     encode/4,
     decodes/1,
@@ -9,26 +10,52 @@
 
 -include("../../include/types.hrl").
 
+init(_, Opts) ->
+    maps:get(record_format, Opts, tuple).
+
 encodes(_Opts) ->
     [record_send].
 
-encode(#pgsql_type_info{fields = Fields}, Value, Codec, _Opts) when is_map(Value) ->
-    encode_record(Codec, Fields, Value);
-encode(_Type, Value, _Codec, _Opts) ->
-    error(badarg, [Value]).
+encode(#pgsql_type_info{fields = FieldsDesc}, Value, Codec, Format) ->
+    Fields = input(Format, FieldsDesc, Value),
+    encode_record(Codec, Fields).
 
 decodes(_Opts) ->
     [record_recv].
 
-decode(#pgsql_type_info{fields = Fields}, Data, Codec, _Opts) ->
-    decode_record(Codec, Fields, Data).
+decode(#pgsql_type_info{name = Name, fields = Fields}, Data, Codec, Format) ->
+    output(Format, Name, Fields, decode_record(Codec, Data)).
+
+
+% Internals
+
+input(tuple, Fields, Tuple) when is_tuple(Tuple), tuple_size(Tuple) =:= length(Fields) ->
+    lists:zipwith(fun ({_Name, Oid}, Value) -> {Oid, Value} end, Fields, tuple_to_list(Tuple));
+input(record, Fields, Record) when is_tuple(Record), (tuple_size(Record) - 1) =:= length(Fields) ->
+    lists:zipwith(fun ({_Name, Oid}, Value) -> {Oid, Value} end, Fields, tl(tuple_to_list(Record)));
+input(_, Fields, Map) when is_map(Map) ->
+    [{Oid, maps:get(Name, Map, null)} || {Name, Oid} <- Fields];
+input(_, _, Value) ->
+    error(badarg, [Value]).
+
+output(tuple, _, _, Values) ->
+    list_to_tuple(Values);
+output(record, Name, _, Values) ->
+    list_to_tuple([Name, Values]);
+output(map, _Name, undefined, Values) ->
+    lists:foldl(fun (Value, Acc) ->
+        Name = iolist_to_binary(io_lib:format("f~B", [map_size(Acc) + 1])),
+        maps:put(Name, Value, Acc)
+    end, #{}, Values);
+output(map, _Name, Fields, Values) ->
+    maps:from_list(lists:zipwith(fun ({Name, _}, Value) -> {Name, Value} end, Fields, Values)).
+
 
 % ==== Encoding
 
-encode_record(Codec, Fields, Map) ->
+encode_record(Codec, Fields) ->
     Count = length(Fields),
-    [<<Count:32/integer>>, lists:map(fun ({Name, Oid}) ->
-        Value = maps:get(Name, Map, null),
+    [<<Count:32/integer>>, lists:map(fun ({Oid, Value}) ->
         encode_field(Codec, Oid, Value)
     end, Fields)].
 
@@ -40,23 +67,17 @@ encode_field(Codec, Oid, Value) ->
 
 % ==== Decoding
 
-decode_record(Codec, undefined, <<_Count:32/integer, Payload/binary>>) ->
-    decode_fields(Codec, undefined, Payload);
-decode_record(Codec, Fields, <<Count:32/integer, Payload/binary>>) when length(Fields) =:= Count ->
-    decode_fields(Codec, Fields, Payload).
+decode_record(Codec, <<_Count:32/integer, Payload/binary>>) ->
+    decode_fields(Codec, Payload).
 
-decode_fields(Codec, Fields, Data) ->
-    decode_fields(Codec, Fields, Data, #{}).
+decode_fields(Codec, Data) ->
+    decode_fields(Codec, Data, []).
 
-decode_fields(_Codec, _, <<>>, Acc) ->
-    Acc;
-decode_fields(Codec, [{Name, _Oid} | Fields], Data, Acc) ->
+decode_fields(_Codec, <<>>, Acc) ->
+    lists:reverse(Acc);
+decode_fields(Codec, Data, Acc) ->
     {Value, Rest} = decode_field(Codec, Data),
-    decode_fields(Codec, Fields, Rest, maps:put(Name, Value, Acc));
-decode_fields(Codec, undefined, Data, Acc) ->
-    Name = iolist_to_binary(io_lib:format("f~B", [map_size(Acc) + 1])),
-    {Value, Rest} = decode_field(Codec, Data),
-    decode_fields(Codec, undefined, Rest, maps:put(Name, Value, Acc)).
+    decode_fields(Codec, Rest, [Value | Acc]).
 
 decode_field(_Codec, <<_Oid:32/integer, -1:32/signed-integer, Rest/binary>>) ->
     {null, Rest};

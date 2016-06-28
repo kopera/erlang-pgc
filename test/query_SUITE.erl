@@ -136,10 +136,8 @@ decode_interval(Config) ->
         = execute("SELECT interval '1 year 2 months 40 days 3 hours 2 minutes'", Config).
 
 decode_record(Config) ->
-    #{rows := [{#{<<"f1">> := 1, <<"f2">> := <<"2">>}}]}
-        = execute("SELECT row(1, '2')", Config),
-    #{rows := [{[#{<<"f1">> := 1, <<"f2">> := <<"2">>}]}]}
-        = execute("SELECT ARRAY[row(1, '2')]", Config).
+    #{rows := [{{1, <<"2">>}}]} = execute("SELECT row(1, '2')", Config),
+    #{rows := [{[{1, <<"2">>}]}]} = execute("SELECT ARRAY[row(1, '2')]", Config).
 
 decode_oid(Config) ->
     #{rows := [{4294967295}]} = execute("select 4294967295::oid;", Config),
