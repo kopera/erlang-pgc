@@ -143,6 +143,5 @@ decode(Oid, Value, #codec{states = States, decoders = Decoders} = Codec) ->
             {Module, State} = lists:keyfind(Module, 1, States),
             Module:decode(Type, Value, Codec, State);
         false ->
-            {unknown, Value}
-            %exit({no_decoder, Oid})
+            exit({no_decoder, Oid})
     end.
