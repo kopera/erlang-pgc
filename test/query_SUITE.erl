@@ -17,7 +17,8 @@
     decode_datetime/1,
     decode_interval/1,
     decode_record/1,
-    decode_oid/1
+    decode_oid/1,
+    decode_network/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -37,7 +38,8 @@ groups() ->
             decode_datetime,
             decode_interval,
             decode_record,
-            decode_oid
+            decode_oid,
+            decode_network
         ]}
     ].
 
@@ -162,6 +164,18 @@ decode_oid(Config) ->
 
     #{rows := [{Cmin, Cmax}]} = execute("select cmin, cmax from pg_type limit 1;", Config),
     true = is_number(Cmin) and is_number(Cmax).
+
+decode_network(Config) ->
+    #{rows := [{#pgsql_inet{address = {127, 0, 0, 1}}}]}
+        = execute("select '127.0.0.1'::inet", Config),
+    #{rows := [{#pgsql_inet{address = {8193, 43981, 0, 0, 0, 0, 0, 0}}}]}
+        = execute("select '2001:abcd::'::inet", Config),
+    #{rows := [{#pgsql_cidr{address = {127, 0, 0, 1}, mask = 32}}]}
+        = execute("select '127.0.0.1/32'::cidr", Config),
+    #{rows := [{#pgsql_cidr{address = {8193, 43981, 0, 0, 0, 0, 0, 0}, mask = 128}}]}
+        = execute("select '2001:abcd::/128'::cidr", Config),
+    #{rows := [{#pgsql_macaddr{address = {8, 1, 43, 5, 7, 9}}}]}
+        = execute("select '08:01:2b:05:07:09'::macaddr", Config).
 
 %% Helpers
 execute(Query, Config) ->

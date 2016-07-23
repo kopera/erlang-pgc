@@ -36,3 +36,16 @@
     seconds :: 0..59,
     micro_seconds :: 0..999999
 }).
+
+-record(pgsql_macaddr, {
+    address :: {byte(), byte(), byte(), byte(), byte(), byte()}
+}).
+
+-record(pgsql_inet, {
+    address :: inet:ip_address()
+}).
+
+-record(pgsql_cidr, {
+    address :: inet:ip_address(),
+    mask :: byte()
+}).
