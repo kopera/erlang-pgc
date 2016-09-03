@@ -365,12 +365,16 @@ send_authenticate_reply(Transport, cleartext, _, _, Password) ->
     send(Transport, [#msg_password{password = Password}]);
 send_authenticate_reply(Transport, md5, Salt, User, Password) ->
     % concat('md5', md5(concat(md5(concat(password, username)), random-salt)))
-    MD5 = io_lib:format("~32.16.0b", [crypto:hash(md5, [Password, User])]),
-    SaltedMD5 = io_lib:format("~32.16.0b", [crypto:hash(md5, [MD5, Salt])]),
+    MD5 = md5_hex([Password, User]),
+    SaltedMD5 = md5_hex([MD5, Salt]),
     send(Transport, [#msg_password{password = ["md5", SaltedMD5]}]);
 send_authenticate_reply(_Transport, Other, _Salt, _User, _Password) ->
     {error, {not_implemented, {auth, Other}}}.
 
+
+md5_hex(Data) ->
+    <<Int:128/unsigned>> = crypto:hash(md5, Data),
+    io_lib:format("~32.16.0b", [Int]).
 
 %%%% Configuring
 
