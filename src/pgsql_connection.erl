@@ -18,6 +18,7 @@
 -behaviour(gen_statem).
 -export([
     init/1,
+    callback_mode/0,
     terminate/3,
     code_change/4,
     format_status/2,
@@ -165,7 +166,7 @@ execute(Conn, Statement, Params) ->
     Statement :: statement() | prepared_statement(),
     Params :: [any()],
     Opts :: #{timeout => timeout()},
-    Result :: #{command := atom(), columns := [binary()], rows := [tuple()]}.
+    Result :: #{command := atom(), columns := [binary()], rows := [tuple()], rows_count => non_neg_integer()}.
 execute(Conn, Statement, Params, Opts) ->
     case gen_statem:call(Conn, {execute, Statement, Params, Opts}) of
         {ok, C, Ref, FieldNames, FieldTypes, Codec} ->
@@ -234,10 +235,11 @@ init({TransportOpts, DatabaseOpts, ConnectionOpts}) ->
         database = DatabaseOpts,
         connection = ConnectionOpts
     },
-    {handle_event_function,
-        disconnected,
-        #disconnected{options = Options, backoff = backoff(TransportOpts)},
+    {ok, disconnected, #disconnected{options = Options, backoff = backoff(TransportOpts)},
         {next_event, internal, connect}}.
+
+callback_mode() ->
+    handle_event_function.
 
 terminate(_Reason, _State, _Data) ->
     ok.
