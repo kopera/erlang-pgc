@@ -1,6 +1,6 @@
 {application, pgsql, [
     {description, "PostgreSQL Database Driver"},
-    {vsn, "0.1.0"},
+    {vsn, "semver"},
     {modules, []},
     {applications, [
         kernel,
