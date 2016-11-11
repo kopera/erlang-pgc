@@ -44,10 +44,10 @@ decode_time(Format, Value) ->
     {H, M, S} = calendar:seconds_to_time(Value div 1000000),
     output(Format, H, M, S, Ms).
 
-input(record, #pgsql_time{hours = H, minutes = M, seconds = S, micro_seconds = Ms}) ->
+input(record, #pgsql_time{hour = H, minute = M, second = S, microsecond = Ms}) ->
     {H, M, S, Ms};
-input(map, #{hours := H, minutes := M, seconds := S} = Time) ->
-    Ms = maps:get(micro_seconds, Time, 0),
+input(map, #{hour := H, minute := M, second := S} = Time) ->
+    Ms = maps:get(microsecond, Time, 0),
     {H, M, S, Ms};
 input(calendar, {H, M, S}) ->
     {H, M, S, 0};
@@ -55,8 +55,8 @@ input(_, Time) ->
     error(badarg, [Time]).
 
 output(record, H, M, S, Ms) ->
-    #pgsql_time{hours = H, minutes = M, seconds = S, micro_seconds = Ms};
+    #pgsql_time{hour = H, minute = M, second = S, microsecond = Ms};
 output(map, H, M, S, Ms) ->
-    #{hours => H, minutes => M, seconds => S, micro_seconds => Ms};
+    #{hour => H, minute => M, second => S, microsecond => Ms};
 output(calendar, H, M, S, _Ms) ->
     {H, M, S}.

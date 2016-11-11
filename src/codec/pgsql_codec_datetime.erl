@@ -36,10 +36,10 @@ decode_datetime(Format, Value) ->
     {{Y, M, D}, {Hr, Mn, Sc}} = calendar:gregorian_seconds_to_datetime((Value div 1000000)),
     output(Format, Y, M, D, Hr, Mn, Sc, Ms).
 
-input(record, #pgsql_datetime{year = Y, month = M, day = D, hours = Hr, minutes = Mn, seconds = Sc, micro_seconds = Ms}) ->
+input(record, #pgsql_datetime{year = Y, month = M, day = D, hour = Hr, minute = Mn, second = Sc, microsecond = Ms}) ->
     {Y, M, D, Hr, Mn, Sc, Ms};
-input(map, #{year := Y, month := M, day := D, hours := Hr, minutes := Mn, seconds := Sc} = Datetime) ->
-    Ms = maps:get(micro_seconds, Datetime, 0),
+input(map, #{year := Y, month := M, day := D, hour := Hr, minute := Mn, second := Sc} = Datetime) ->
+    Ms = maps:get(microsecond, Datetime, 0),
     {Y, M, D, Hr, Mn, Sc, Ms};
 input(calendar, {{Y, M, D}, {Hr, Mn, Sc}}) ->
     {Y, M, D, Hr, Mn, Sc, 0};
@@ -47,8 +47,8 @@ input(_, Time) ->
     error(badarg, [Time]).
 
 output(record, Y, M, D, Hr, Mn, Sc, Ms) ->
-    #pgsql_datetime{year = Y, month = M, day = D, hours = Hr, minutes = Mn, seconds = Sc, micro_seconds = Ms};
+    #pgsql_datetime{year = Y, month = M, day = D, hour = Hr, minute = Mn, second = Sc, microsecond = Ms};
 output(map, Y, M, D, Hr, Mn, Sc, Ms) ->
-    #{year => Y, month => M, day => D, hours => Hr, minutes => Mn, seconds => Sc, micro_seconds => Ms};
+    #{year => Y, month => M, day => D, hour => Hr, minute => Mn, second => Sc, microsecond => Ms};
 output(calendar, Y, M, D, Hr, Mn, Sc, _Ms) ->
     {{Y, M, D}, {Hr, Mn, Sc}}.

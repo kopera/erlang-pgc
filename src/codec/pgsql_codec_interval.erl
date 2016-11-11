@@ -29,14 +29,14 @@ decode(_Type, <<MicroSecs:64/integer, Days:32/integer, Months:32/integer>>, _Cod
 
 % Internals
 
-input(record, #pgsql_interval{months = Months, days = Days, micro_seconds = MicroSecs}) ->
+input(record, #pgsql_interval{months = Months, days = Days, microseconds = MicroSecs}) ->
     {Months, Days, MicroSecs};
-input(map, #{months := Months, days := Days, micro_seconds := MicroSecs}) ->
+input(map, #{months := Months, days := Days, microseconds := MicroSecs}) ->
     {Months, Days, MicroSecs};
 input(_, Date) ->
     error(badarg, [Date]).
 
 output(record, Months, Days, MicroSecs) ->
-    #pgsql_interval{months = Months, days = Days, micro_seconds = MicroSecs};
+    #pgsql_interval{months = Months, days = Days, microseconds = MicroSecs};
 output(map, Months, Days, MicroSecs) ->
-    #{months => Months, days => Days, micro_seconds => MicroSecs}.
+    #{months => Months, days => Days, microseconds => MicroSecs}.

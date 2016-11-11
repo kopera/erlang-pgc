@@ -11,7 +11,7 @@
 -record(pgsql_interval, {
     months :: non_neg_integer(),
     days :: non_neg_integer(),
-    micro_seconds :: non_neg_integer()
+    microseconds :: non_neg_integer()
 }).
 
 -record(pgsql_date, {
@@ -21,20 +21,20 @@
 }).
 
 -record(pgsql_time, {
-    hours :: 0..23,
-    minutes :: 0..59,
-    seconds :: 0..59,
-    micro_seconds :: 0..999999
+    hour :: 0..23,
+    minute :: 0..59,
+    second :: 0..59,
+    microsecond :: 0..999999
 }).
 
 -record(pgsql_datetime, {
     year :: 1..294276,
     month :: 1..12,
     day :: 1..31,
-    hours :: 0..23,
-    minutes :: 0..59,
-    seconds :: 0..59,
-    micro_seconds :: 0..999999
+    hour :: 0..23,
+    minute :: 0..59,
+    second :: 0..59,
+    microsecond :: 0..999999
 }).
 
 -record(pgsql_macaddr, {

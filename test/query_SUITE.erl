@@ -92,19 +92,19 @@ decode_arrays(Config) ->
     #{rows := [{[[0]]}]} = execute("SELECT ARRAY[ARRAY[0]]", Config).
 
 decode_time(Config) ->
-    #{rows := [{#pgsql_time{hours = 0, minutes = 0, seconds = 0, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_time{hour = 0, minute = 0, second = 0, microsecond = 0}}]}
         = execute("SELECT time '00:00:00'", Config),
-    #{rows := [{#pgsql_time{hours = 1, minutes = 2, seconds = 3, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_time{hour = 1, minute = 2, second = 3, microsecond = 0}}]}
         = execute("SELECT time '01:02:03'", Config),
-    #{rows := [{#pgsql_time{hours = 23, minutes = 59, seconds = 59, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_time{hour = 23, minute = 59, second = 59, microsecond = 0}}]}
         = execute("SELECT time '23:59:59'", Config),
-    #{rows := [{#pgsql_time{hours = 0, minutes = 0, seconds = 0, micro_seconds = 123000}}]}
+    #{rows := [{#pgsql_time{hour = 0, minute = 0, second = 0, microsecond = 123000}}]}
         = execute("SELECT time '00:00:00.123'", Config),
-    #{rows := [{#pgsql_time{hours = 0, minutes = 0, seconds = 0, micro_seconds = 123456}}]}
+    #{rows := [{#pgsql_time{hour = 0, minute = 0, second = 0, microsecond = 123456}}]}
         = execute("SELECT time '00:00:00.123456'", Config),
-    #{rows := [{#pgsql_time{hours = 1, minutes = 2, seconds = 3, micro_seconds = 123456}}]}
+    #{rows := [{#pgsql_time{hour = 1, minute = 2, second = 3, microsecond = 123456}}]}
         = execute("SELECT time '01:02:03.123456'", Config),
-    #{rows := [{#pgsql_time{hours = 2, minutes = 5, seconds = 6, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_time{hour = 2, minute = 5, second = 6, microsecond = 0}}]}
         = execute("SELECT timetz '04:05:06+02'", Config).
 
 decode_date(Config) ->
@@ -116,25 +116,25 @@ decode_date(Config) ->
         = execute("SELECT date '2013-09-23'", Config).
 
 decode_datetime(Config) ->
-    #{rows := [{#pgsql_datetime{year = 2001, month = 1, day = 1, hours = 0, minutes = 0, seconds = 0, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_datetime{year = 2001, month = 1, day = 1, hour = 0, minute = 0, second = 0, microsecond = 0}}]}
         = execute("SELECT timestamp '2001-01-01 00:00:00'", Config),
-    #{rows := [{#pgsql_datetime{year = 2013, month = 9, day = 23, hours = 14, minutes = 4, seconds = 37, micro_seconds = 123000}}]}
+    #{rows := [{#pgsql_datetime{year = 2013, month = 9, day = 23, hour = 14, minute = 4, second = 37, microsecond = 123000}}]}
         = execute("SELECT timestamp '2013-09-23 14:04:37.123'", Config),
-    #{rows := [{#pgsql_datetime{year = 2013, month = 9, day = 23, hours = 14, minutes = 4, seconds = 37, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_datetime{year = 2013, month = 9, day = 23, hour = 14, minute = 4, second = 37, microsecond = 0}}]}
         = execute("SELECT timestamp '2013-09-23 14:04:37 PST'", Config),
-    #{rows := [{#pgsql_datetime{year = 1, month = 1, day = 1, hours = 0, minutes = 0, seconds = 0, micro_seconds = 123456}}]}
+    #{rows := [{#pgsql_datetime{year = 1, month = 1, day = 1, hour = 0, minute = 0, second = 0, microsecond = 123456}}]}
         = execute("SELECT timestamp '0001-01-01 00:00:00.123456'", Config).
 
 decode_interval(Config) ->
-    #{rows := [{#pgsql_interval{months = 0, days = 0, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_interval{months = 0, days = 0, microseconds = 0}}]}
         = execute("SELECT interval '0'", Config),
-    #{rows := [{#pgsql_interval{months = 100, days = 0, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_interval{months = 100, days = 0, microseconds = 0}}]}
         = execute("SELECT interval '100 months'", Config),
-    #{rows := [{#pgsql_interval{months = 0, days = 100, micro_seconds = 0}}]}
+    #{rows := [{#pgsql_interval{months = 0, days = 100, microseconds = 0}}]}
         = execute("SELECT interval '100 days'", Config),
-    #{rows := [{#pgsql_interval{months = 0, days = 0, micro_seconds = 100000000}}]}
+    #{rows := [{#pgsql_interval{months = 0, days = 0, microseconds = 100000000}}]}
         = execute("SELECT interval '100 seconds'", Config),
-    #{rows := [{#pgsql_interval{months = 14, days = 40, micro_seconds = 10920000000}}]}
+    #{rows := [{#pgsql_interval{months = 14, days = 40, microseconds = 10920000000}}]}
         = execute("SELECT interval '1 year 2 months 40 days 3 hours 2 minutes'", Config).
 
 decode_record(Config) ->
