@@ -52,6 +52,7 @@
     pgsql_codec_int4,
     pgsql_codec_int8,
     pgsql_codec_interval,
+    pgsql_codec_json,
     pgsql_codec_network,
     pgsql_codec_oid,
     pgsql_codec_record,

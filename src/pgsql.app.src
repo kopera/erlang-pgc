@@ -7,7 +7,8 @@
         stdlib,
         crypto,
         ssl,
-        backoff
+        backoff,
+        jsone
     ]},
     {registered, []},
     {env, []}
