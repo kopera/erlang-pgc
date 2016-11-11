@@ -219,8 +219,12 @@ transaction(Conn, Fun, Opts) ->
                     ok = gen_statem:call(Conn, {rollback, Opts}),
                     Error;
                 Class:Error ->
-                    ok = gen_statem:call(Conn, {rollback, Opts}),
-                    erlang:raise(Class, Error, erlang:get_stacktrace())
+                    Stacktrace = erlang:get_stacktrace(),
+                    try
+                        gen_statem:call(Conn, {rollback, Opts})
+                    after
+                        erlang:raise(Class, Error, Stacktrace)
+                    end
             end;
         {error, _} = Error ->
             Error
