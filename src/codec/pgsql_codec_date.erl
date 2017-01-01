@@ -18,8 +18,8 @@ init(_, Opts) ->
 encodes(_Opts) ->
     [date_send].
 
-encode(_Type, Date, _Codec, Format) ->
-    Date = input(Format, Date),
+encode(_Type, Date0, _Codec, Format) ->
+    Date = input(Format, Date0),
     case calendar:valid_date(Date) of
         true -> <<(calendar:date_to_gregorian_days(Date) - ?epoch):32/signed-integer>>;
         false -> error(badarg, [Date])
