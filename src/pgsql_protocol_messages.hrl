@@ -58,7 +58,7 @@
 -record(msg_empty_query_response, {
 }).
 -record(msg_error_response, {
-    fields = #{} :: #{atom() | byte() => binary()}
+    fields = #{} :: #{atom() | byte() => binary() | atom()}
 }).
 -record(msg_execute, {
     portal = "" :: iodata(),

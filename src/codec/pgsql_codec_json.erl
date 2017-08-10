@@ -15,7 +15,7 @@ encodes(_Opts) ->
 encode(#pgsql_type_info{send = json_send}, Value, _Codec, _Opts) ->
     jsone:encode(Value);
 encode(#pgsql_type_info{send = jsonb_send}, Value, _Codec, _Opts) ->
-    [1 | jsone:encode(Value)];
+    [1, jsone:encode(Value)];
 encode(_Type, Value, _Codec, _Opts) ->
     error(badarg, [Value]).
 
