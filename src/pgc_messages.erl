@@ -1,26 +1,31 @@
--module(pgsql_protocol).
+%% @private
+-module(pgc_messages).
 -export([
-    encode_messages/1,
-    decode_messages/1
+    encode/1,
+    decode/1
 ]).
 
--spec encode_messages([pgsql_protocol_messages:message()]) -> iolist().
-encode_messages(Messages) ->
+
+% @doc encode 1 or more protocol messages.
+-spec encode([pgc_message:message_f() | pgc_message:message_fb()]) -> iolist().
+encode(Messages) ->
     [encode_message(Message) || Message <- Messages].
 
 encode_message(Message) ->
-    {Type, Payload} = pgsql_protocol_messages:encode(Message),
+    {Type, Payload} = pgc_message:encode(Message),
     [Type, <<(iolist_size(Payload) + 4):32/integer>>, Payload].
 
--spec decode_messages(binary()) -> {[pgsql_protocol_messages:message()], Rest :: binary()}.
-decode_messages(Data) ->
-    {Messages, Rest} = decode_messages(Data, []),
+
+% @doc decode 0 or more protocol messages.
+-spec decode(binary()) -> {[pgc_message:t()], Rest :: binary()}.
+decode(Data) ->
+    {Messages, Rest} = decode(Data, []),
     {Messages, binary:copy(Rest)}.
 
-decode_messages(Data, Acc) ->
+decode(Data, Acc) ->
     case decode_message(Data) of
         {ok, Message, Rest} ->
-            decode_messages(Rest, [Message | Acc]);
+            decode(Rest, [Message | Acc]);
         {incomplete, _} ->
             {lists:reverse(Acc), Data}
     end.
@@ -31,7 +36,7 @@ decode_message(<<Code:8/integer, Size:32/integer, Available/binary>>) ->
     if
         PayloadSize =< AvailableSize ->
             <<Payload:PayloadSize/binary, Rest/binary>> = Available,
-            {ok, pgsql_protocol_messages:decode(Code, Payload), Rest};
+            {ok, pgc_message:decode(Code, Payload), Rest};
         PayloadSize > AvailableSize ->
             {incomplete, PayloadSize - AvailableSize}
     end;

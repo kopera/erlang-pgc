@@ -1,0 +1,17 @@
+{application, pgc, [
+    {description, "PostgreSQL client library"},
+    {vsn, git},
+    {registered, [pgc_sup]},
+    {mod, {pgc_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        ssl
+    ]},
+    {env,[]},
+    {modules, []},
+
+    {licenses, ["Apache 2.0"]},
+    {links, []}
+ ]}.

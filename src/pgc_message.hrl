@@ -1,10 +1,20 @@
 -record(msg_auth, {
-    type = ok :: ok | kerberos | cleartext | md5 | scm | gss | sspi | gss_continue | byte(),
+    type ::  ok
+        | kerberos
+        | cleartext
+        | md5
+        | gss
+        | gss_continue
+        | sspi
+        | sasl
+        | sasl_continue
+        | sasl_final
+        | byte(),
     data = <<>> :: binary()
 }).
 -record(msg_backend_key_data, {
-    id = 0 :: non_neg_integer(),
-    secret = 0 :: non_neg_integer()
+    id :: non_neg_integer(),
+    secret :: non_neg_integer()
 }).
 -record(msg_bind, {
     portal = "" :: iodata(),
@@ -58,7 +68,7 @@
 -record(msg_empty_query_response, {
 }).
 -record(msg_error_response, {
-    fields = #{} :: #{atom() | byte() => binary() | atom()}
+    fields = #{} :: pgc_message:error_fields()
 }).
 -record(msg_execute, {
     portal = "" :: iodata(),
@@ -66,18 +76,18 @@
 }).
 -record(msg_flush, {
 }).
--record(msg_function_call, {
-    oid = 1 :: pgsql_types:oid(),
-    parameters = [] :: [{binary | text, iodata()}],
-    result = text :: binary | text
-}).
--record(msg_function_call_response, {
-    result = undefined :: undefined | binary()
-}).
+% -record(msg_function_call, {
+%     oid = 1 :: pgc_type:oid(),
+%     parameters = [] :: [{binary | text, iodata()}],
+%     result = text :: binary | text
+% }).
+% -record(msg_function_call_response, {
+%     result = undefined :: undefined | binary()
+% }).
 -record(msg_no_data, {
 }).
 -record(msg_notice_response, {
-    fields = #{} :: #{atom() | byte() => binary()}
+    fields = #{} :: pgc_message:notice_fields()
 }).
 -record(msg_notification_response, {
     id = 0 :: non_neg_integer(),
@@ -86,7 +96,7 @@
 }).
 -record(msg_parameter_description, {
     count = 0 :: non_neg_integer(),
-    types = [] :: [pgsql_types:oid()]
+    types = [] :: [pgc_type:oid()]
 }).
 -record(msg_parameter_status, {
     name = <<>> :: binary(),
@@ -95,7 +105,7 @@
 -record(msg_parse, {
     name = "" :: iodata(),
     statement = "" :: iodata(),
-    types = [] :: [pgsql_types:oid() | 0]
+    types = [] :: [pgc_type:oid() | 0]
 }).
 -record(msg_parse_complete, {
 }).
@@ -113,9 +123,9 @@
 % Not an actual message but used in the #msg_row_description{} record
 -record(msg_row_description_field, {
     name :: binary(),
-    table_oid :: pgsql_types:oid() | 0,
+    table_oid :: pgc_type:oid() | 0,
     field_number :: pos_integer() | 0,
-    type_oid :: pgsql_types:oid(),
+    type_oid :: pgc_type:oid(),
     type_size :: integer(),
     type_modifier :: integer(),
     format :: text | binary
@@ -124,9 +134,15 @@
     count :: non_neg_integer(),
     fields :: [#msg_row_description_field{}]
 }).
--record(msg_ssl_request, {}).
+-record(msg_sasl_initial_response, {
+    mechanism :: binary(),
+    data :: iodata() | undefined
+}).
+-record(msg_sasl_response, {
+    data :: iodata()
+}).
 -record(msg_startup, {
-    parameters = #{} :: #{atom() => binary()}
+    parameters = #{} :: #{atom() => unicode:chardata()}
 }).
 -record(msg_sync, {
 }).
