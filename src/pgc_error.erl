@@ -1,7 +1,9 @@
 -module(pgc_error).
 -export([
     feature_not_supported/1,
-    authentication_failure/1
+    authentication_failure/1,
+    disconnected/0,
+    disconnected/1
 ]).
 -export([
     from_message/1
@@ -49,6 +51,15 @@ authentication_failure(Message) ->
     new(<<"28P01">>, Message).
 
 
+-spec disconnected() -> t().
+disconnected() ->
+    new(<<"28P01">>, <<"Server connection closed">>).
+
+-spec disconnected(unicode:chardata() | {io:format(), [term()]}) -> t().
+disconnected(Message) ->
+    new(<<"28P01">>, Message).
+
+
 %% @private
 -spec new(binary(), unicode:chardata() | {io:format(), [term()]}) -> t().
 new(Code, {Format, Params} = _Message) ->
@@ -89,8 +100,6 @@ from_message(#msg_error_response{fields = Fields}) ->
 -spec class_from_code(Code :: binary()) -> class().
 -type class() ::
       sql_statement_not_yet_complete
-    | connection_exception
-    | sql_statement_not_yet_complete
     | connection_exception
     | triggered_action_exception
     | feature_not_supported
