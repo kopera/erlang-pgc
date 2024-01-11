@@ -1,7 +1,34 @@
 -module(pgc_codec_array).
 -export([
+    info/1,
+    encode/4,
+    decode/4
+]).
+-export([
     decode/2
 ]).
+
+-include("../pgc_type.hrl").
+
+
+info(_Options) ->
+    #{
+        encodes => [array_send, int2vectorsend, oidvectorsend],
+        decodes => [array_recv, int2vectorrecv, oidvectorrecv]
+    }.
+
+
+encode(#pgc_type{element = ElementOid}, Values, _Options, EncodeFun) when is_list(Values) ->
+    {Flags, EncodedElements} = encode_elements(EncodeFun, ElementOid, Values),
+    [encode_header(ElementOid, Flags, Values) | EncodedElements];
+encode(Type, Value, Options, EncodeFun) ->
+    error(badarg, [Type, Value, Options, EncodeFun]).
+
+
+decode(#pgc_type{element = ElementOid}, Data, _Options, DecodeFun) ->
+    {Lengths, _Flags, ElementOid, Rest} = decode_header(Data),
+    Elements = decode_elements(DecodeFun, ElementOid, Rest),
+    unflatten(Lengths, Elements).
 
 
 %% @private
@@ -12,6 +39,58 @@ decode(DecodeElementFun, Data) ->
     unflatten(Lengths, Elements).
 
 
+% ------------------------------------------------------------------------------
+% Encoding
+% ------------------------------------------------------------------------------
+
+%% @private
+encode_header(ElementOid, Flags, Value) ->
+    Lengths = lengths(Value, []),
+    Dims = length(Lengths),
+    <<
+        Dims:32/signed-integer,
+        Flags:32/signed-integer,
+        ElementOid:32/signed-integer,
+        << <<Length:32/signed-integer, 1:32/signed-integer>> || Length <- Lengths >>/binary
+    >>.
+
+
+%% @private
+lengths([], []) ->
+    [0];
+lengths([], Acc) ->
+    lists:reverse(Acc);
+lengths([H | _] = Value, Acc) when is_list(H) ->
+    lengths(H, [length(Value) | Acc]);
+lengths(Value, Acc) ->
+    lists:reverse([length(Value) | Acc]).
+
+
+%% @private
+encode_elements(EncodeFun, ElementOid, Values) ->
+    encode_elements(EncodeFun, ElementOid, 0, lists:flatten(Values), []).
+
+%% @private
+encode_elements(_EncodeFun, _ElementsOid, Flags, [], Acc) ->
+    {Flags, lists:reverse(Acc)};
+encode_elements(EncodeFun, ElementOid, Flags, [Value | Rest], Acc) ->
+    {Flags1, Element} = encode_element(EncodeFun, ElementOid, Flags, Value),
+    encode_elements(EncodeFun, ElementOid, Flags1, Rest, [Element | Acc]).
+
+
+%% @private
+encode_element(_EncodeFun, _Oid, Flags, null) ->
+    {Flags bor 1, <<-1:32/signed-integer>>};
+encode_element(EncodeFun, Oid, Flags, Value) ->
+    Encoded = EncodeFun(Oid, Value),
+    {Flags, [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded]}.
+
+
+% ------------------------------------------------------------------------------
+% Decoding
+% ------------------------------------------------------------------------------
+
+%% @private
 %% Convert the 1-d elements list into a multi-dimentional list according to the array lengths.
 unflatten([Length | Lengths], Elements) ->
     unflatten(Lengths, split(Length, Elements, []));
@@ -20,7 +99,7 @@ unflatten([], [Elements]) ->
 unflatten([], []) ->
     [].
 
-
+%% @private
 %% Split a list into sublists of equal size
 split(_Length, [], Acc) ->
     lists:reverse(Acc);
@@ -29,11 +108,13 @@ split(Length, Elements, Acc) ->
     split(Length, Rest, [Chunk | Acc]).
 
 
-% header
+%% @private
 decode_header(<<Dims:32/signed-integer, Flags:32/signed-integer, ElementOid:32/signed-integer, Rest/binary>>) ->
     {Lengths, Rest1} = decode_lengths(Dims, [], Rest),
     {Lengths, Flags, ElementOid, Rest1}.
 
+
+%% @private
 decode_lengths(0, Lengths, Payload) ->
     {Lengths, Payload};
 decode_lengths(Dims, Lengths, <<Length:32/signed-integer, LowerBound:32/signed-integer, Rest/binary>>) ->
@@ -42,16 +123,20 @@ decode_lengths(Dims, Lengths, <<Length:32/signed-integer, LowerBound:32/signed-i
     1 = LowerBound,
     decode_lengths(Dims - 1, [Length | Lengths], Rest).
 
-% elements
+
+%% @private
 decode_elements(DecodeElementFun, ElementOid, Payload) ->
     decode_elements(DecodeElementFun, ElementOid, Payload, []).
 
+%% @private
 decode_elements(_DecodeElementFun, _ElementsOid, <<>>, Acc) ->
     lists:reverse(Acc);
 decode_elements(DecodeElementFun, ElementOid, Data, Acc) ->
     {Element, Rest} = decode_element(DecodeElementFun, ElementOid, Data),
     decode_elements(DecodeElementFun, ElementOid, Rest, [Element | Acc]).
 
+
+%% @private
 decode_element(_DecodeElementFun, _Oid, <<-1:32/signed-integer, Rest/binary>>) ->
     {null, Rest};
 decode_element(DecodeElementFun, Oid, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>) ->

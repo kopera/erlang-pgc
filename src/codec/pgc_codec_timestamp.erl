@@ -21,8 +21,8 @@ encode(_Type, infinity, _Options) ->
     <<16#7FFFFFFFFFFFFFFF:64/signed-integer>>;
 encode(_Type, '-infinity', _Options) ->
     <<-16#8000000000000000:64/signed-integer>>;
-encode(_Type, Datetime, _Options) ->
-    {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds} = input(calendar, Datetime),
+encode(_Type, Term, Options) ->
+    {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds} = from_term(Options, Term),
     Timestamp = (calendar:datetime_to_gregorian_seconds({{Year, Month, Day}, {Hours, Minutes, Seconds}})) * 1000000 + MicroSeconds - ?epoch,
     <<Timestamp:64/signed-integer>>.
 
@@ -34,22 +34,30 @@ decode(_Type, <<-16#8000000000000000:64/signed-integer>>, _Options) ->
 decode(_Type, <<Value:64/signed-integer>>, Options) ->
     MicroSeconds = Value rem 1000000,
     {{Year, Month, Day}, {Hours, Minutes, Seconds}} = calendar:gregorian_seconds_to_datetime(Value div 1000000),
-    output(Options, {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds}).
+    to_term(Options, {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds}).
 
 
-%% Internals
-input(_Options, {{Year, Month, Day}, {Hours, Minutes, Seconds}}) when is_integer(Seconds) ->
+% ------------------------------------------------------------------------------
+% Encoding
+% ------------------------------------------------------------------------------
+
+%% @private
+from_term(_Options, {{Year, Month, Day}, {Hours, Minutes, Seconds}}) when is_integer(Seconds) ->
     {Year, Month, Day, Hours, Minutes, Seconds, 0};
-input(_Options, {{Year, Month, Day}, {Hours, Minutes, SecondsFloat}}) when is_float(SecondsFloat) ->
+from_term(_Options, {{Year, Month, Day}, {Hours, Minutes, SecondsFloat}}) when is_float(SecondsFloat) ->
     Seconds = trunc(SecondsFloat),
     MicroSeconds = trunc((SecondsFloat - Seconds) * 1000000),
     {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds};
-input(Options, Timestamp) ->
+from_term(Options, Timestamp) ->
     error(badarg, [Options, Timestamp]).
 
 
-%% Internals
-output(_Options, {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds}) ->
+% ------------------------------------------------------------------------------
+% Decoding
+% ------------------------------------------------------------------------------
+
+%% @private
+to_term(_Options, {Year, Month, Day, Hours, Minutes, Seconds, MicroSeconds}) ->
     SecondsFloat = if
         MicroSeconds =:= 0 ->
             Seconds;
