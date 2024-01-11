@@ -1,7 +1,9 @@
 %% @private
 -module(pgc_codec).
+-feature(maybe_expr, enable).
 -export([
-    new/3,
+    init/3,
+    get_type/2,
     encode/3,
     encode_many/3,
     decode/3,
@@ -58,17 +60,25 @@
 -opaque t() :: #codec{}.
 
 
--spec new([pgc_type:t()], pgc_connection:parameters(), options()) -> t().
+-spec init([pgc_type:t()], pgc_connection:parameters(), options()) -> {ok, t()} | {error, Error} when
+    Error :: pgc_error:t().
 -type options() :: #{}.
-new(Types, Parameters, Options) ->
+init(Types, Parameters, Options) ->
     Codecs = [{CodecModule, init_codec(CodecModule, Parameters, Options)} || CodecModule <- ?default_codecs],
-    {ok, Encoders} = init_encoders(Codecs, Types),
-    {ok, Decoders} = init_decoders(Codecs, Types),
-    #codec{
-        types = maps:from_list([{Type#pgc_type.oid, Type} || Type <- Types]),
-        encoders = Encoders,
-        decoders = Decoders
-    }.
+    maybe
+        {ok, Encoders} ?= init_encoders(Codecs, Types),
+        {ok, Decoders} ?= init_decoders(Codecs, Types),
+        {ok, #codec{
+            types = maps:from_list([{Type#pgc_type.oid, Type} || Type <- Types]),
+            encoders = Encoders,
+            decoders = Decoders
+        }}
+    end.
+
+
+-spec get_type(pgc_type:oid(), t()) -> pgc_type:t().
+get_type(TypeID, #codec{types = Types}) ->
+    maps:get(TypeID, Types).
 
 
 -spec encode(pgc_type:oid(), null, t()) -> {binary, null};
@@ -135,7 +145,7 @@ init_encoders(Codecs, [Type | Types], Acc) ->
         {ok, Codec} ->
             init_encoders(Codecs, Types, Acc#{Type#pgc_type.oid => Codec});
         error ->
-            {error, {missing_encoder, Type}}
+            {error, pgc_error:feature_not_supported({"Missing encoder for type '~s'", Type#pgc_type.name})}
     end.
 
 
@@ -151,7 +161,7 @@ init_decoders(Codecs, [Type | Types], Acc) ->
         {ok, Codec} ->
             init_decoders(Codecs, Types, Acc#{Type#pgc_type.oid => Codec});
         error ->
-            {error, {missing_decoder, Type}}
+            {error, pgc_error:feature_not_supported({"Missing decoder for type '~s'", Type#pgc_type.name})}
     end.
 
 
@@ -164,6 +174,7 @@ find_encoder(#pgc_type{send = SendProc} = Type, [{CodecModule, CodecState} = Cod
         true -> {ok, Codec};
         false -> find_encoder(Type, Codecs)
     end.
+
 
 %% @private
 find_decoder(_, []) ->

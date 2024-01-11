@@ -1,6 +1,7 @@
 -module(pgc).
 -export([
-    connect/2
+    connect/2,
+    disconnect/1
 ]).
 
 
@@ -22,7 +23,7 @@ connect(TransportOptions, ConnectionOptions) ->
                         maps:merge(DefaultParameters, P)
                     end, DefaultParameters, ConnectionOptions),
                     ok = pgc_transport:set_owner(Transport, ConnectionPid),
-                    case pgc_connection:startup(ConnectionPid, Transport, ConnectionOptions1) of
+                    case pgc_connection:open(ConnectionPid, Transport, ConnectionOptions1) of
                         ok -> {ok, ConnectionPid};
                         {error, _} = Error -> Error
                     end;
@@ -33,3 +34,7 @@ connect(TransportOptions, ConnectionOptions) ->
         {error, _} = Error ->
             Error 
     end.
+
+
+disconnect(Connection) ->
+    pgc_connection:close(Connection).

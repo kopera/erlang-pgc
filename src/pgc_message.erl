@@ -341,7 +341,7 @@ decode_row_description_fields(Payload, Acc) ->
         TypeModifier:32/signed-integer,
         Format:16/integer,
         Rest/binary>>} = decode_string(Payload),
-    decode_row_description_fields(Rest, [#msg_row_description_field{
+    decode_row_description_fields(Rest, [#pgc_row_field{
         name = Name,
         table_oid = TableOid,
         field_number = FieldNumber,

@@ -1,7 +1,10 @@
 -module(pgc_error).
 -export([
+    protocol_violation/1,
     feature_not_supported/1,
+    invalid_parameter_value/3,
     authentication_failure/1,
+    invalid_sql_statement_name/1,
     disconnected/0,
     disconnected/1
 ]).
@@ -16,6 +19,7 @@
 ]).
 
 -include("./pgc_message.hrl").
+-include("./pgc_type.hrl").
 
 -type t() :: info().
 -type info() :: #{
@@ -40,16 +44,25 @@
     routine => unicode:unicode_binary()
 }.
 
+-spec protocol_violation(unicode:chardata() | {io:format(), [term()]}) -> t().
+protocol_violation(Message) ->
+    new(<<"08P01">>, Message).
 
 -spec feature_not_supported(unicode:chardata() | {io:format(), [term()]}) -> t().
 feature_not_supported(Message) ->
     new(<<"0A000">>, Message).
 
+-spec invalid_parameter_value(pos_integer(), term(), pgc_type:t()) -> t().
+invalid_parameter_value(Index, Value, #pgc_type{name = TypeName}) ->
+    new(<<"22023">>, {"Invalid parameter of type '~s' value '~p' at index ~b", [TypeName, Value, Index]}).
+
+-spec invalid_sql_statement_name(unicode:chardata()) -> t().
+invalid_sql_statement_name(Name) ->
+    new(<<"26000">>, {"Reserved SQL statememt name: ~s", [Name]}).
 
 -spec authentication_failure(unicode:chardata() | {io:format(), [term()]}) -> t().
 authentication_failure(Message) ->
     new(<<"28P01">>, Message).
-
 
 -spec disconnected() -> t().
 disconnected() ->

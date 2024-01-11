@@ -1,3 +1,8 @@
+-ifndef(PGC_MESSAGE_HRL).
+-define(PGC_MESSAGE_HRL, true).
+
+-include("./pgc_row.hrl").
+
 -record(msg_auth, {
     type ::  ok
         | kerberos
@@ -120,19 +125,9 @@
 -record(msg_ready_for_query, {
     status = idle :: idle | transaction | error
 }).
-% Not an actual message but used in the #msg_row_description{} record
--record(msg_row_description_field, {
-    name :: binary(),
-    table_oid :: pgc_type:oid() | 0,
-    field_number :: pos_integer() | 0,
-    type_oid :: pgc_type:oid(),
-    type_size :: integer(),
-    type_modifier :: integer(),
-    format :: text | binary
-}).
 -record(msg_row_description, {
     count :: non_neg_integer(),
-    fields :: [#msg_row_description_field{}]
+    fields :: [#pgc_row_field{}]
 }).
 -record(msg_sasl_initial_response, {
     mechanism :: binary(),
@@ -148,3 +143,5 @@
 }).
 -record(msg_terminate, {
 }).
+
+-endif.
