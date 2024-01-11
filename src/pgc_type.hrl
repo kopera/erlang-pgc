@@ -1,3 +1,6 @@
+-ifndef(PGC_TYPE_HRL).
+-define(PGC_TYPE_HRL, true).
+
 -record(pgc_type, {
     oid :: pgc_type:oid(),
     name :: atom(),
@@ -8,3 +11,5 @@
     parent :: pgc_type:oid() | undefined,
     fields :: [{atom(), pgc_type:oid()}] | undefined
 }).
+
+-endif.
