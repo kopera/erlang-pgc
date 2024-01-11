@@ -61,6 +61,6 @@ dependencies(#pgc_type{element = undefined, parent = undefined, fields = undefin
 dependencies(#pgc_type{element = ElementType, parent = ParentType, fields = Fields}) ->
     lists:flatmap(fun
         (undefined) -> [];
-        (Children) when is_list(Fields) -> [TypeID || {_, TypeID} <- Children];
+        (Children) when is_list(Children) -> [TypeID || {_, TypeID} <- Children];
         (TypeID) when is_integer(TypeID) -> [TypeID]
     end, [ElementType, ParentType, Fields]).
