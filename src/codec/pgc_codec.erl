@@ -29,26 +29,26 @@
 
 -include("../pgc_type.hrl").
 -define(default_codecs, [
-    % pgc_codec_array,
     pgc_codec_int4,
     pgc_codec_text,
     pgc_codec_uuid,
     pgc_codec_bool,
     pgc_codec_bytea,
     pgc_codec_json,
-    % pgc_codec_date,
     pgc_codec_timestamp,
     pgc_codec_enum,
+    pgc_codec_array,
     pgc_codec_float4,
-    pgc_codec_float8,
-    % pgc_codec_hstore,
-    pgc_codec_int2,
     pgc_codec_int8,
+    pgc_codec_float8,
+    pgc_codec_hstore,
+    pgc_codec_int2,
     % pgc_codec_interval,
     % pgc_codec_network,
     pgc_codec_oid,
-    % pgc_codec_record,
-    % pgc_codec_time,
+    pgc_codec_record,
+    pgc_codec_date,
+    pgc_codec_time,
     pgc_codec_void
 ]).
 
@@ -107,6 +107,7 @@ encode_many(TypeIDs, Values, Codec) ->
 decode(_TypeID, null, _Codec) ->
     null;
 decode(TypeID, Value, #codec{types = Types, decoders = Decoders} = Codec) ->
+    io:format("~p ~p ~p~n", [TypeID, Value, Types]),
     #{TypeID := Type} = Types,
     #{TypeID := {CodecModule, CodecState}} = Decoders,
     case erlang:function_exported(CodecModule, decode, 4) of
