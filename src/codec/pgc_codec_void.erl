@@ -2,24 +2,25 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [void_send],
         decodes => [void_recv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, undefined, _Options) ->
+encode(undefined, _Options) ->
     <<>>;
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Value, Options) ->
+    error(badarg, [Value, Options]).
 
 
-decode(_Type, <<>>, _Options) ->
+decode(<<>>, _Options) ->
     undefined.

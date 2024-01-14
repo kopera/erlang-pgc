@@ -1,7 +1,7 @@
 -module(pgc_codec_record).
 -behaviour(pgc_codec).
 -export([
-    info/1,
+    init/1,
     encode/4,
     decode/4
 ]).
@@ -9,35 +9,45 @@
 -include("../pgc_type.hrl").
 
 
-info(_Options) ->
-    #{
+init(Options) ->
+    Codec = case Options of
+        % #{record := #{codec := C}} when is_atom(C) -> {codec, C};
+        % #{record := #{codec := _}} -> erlang:error(badarg, [Options]);
+        #{record := map} -> map;
+        #{record := _} -> erlang:error(badarg, [Options]);
+        #{} -> map
+    end,
+    Info = #{
         encodes => [record_send],
         decodes => [record_recv]
-    }.
+    },
+    {Info, Codec}.
 
 
-encode(#pgc_type{name = Name, fields = FieldsDesc}, Input, Options, EncodeFun) ->
-    Fields = fields_from_term(Name, FieldsDesc, Input, Options),
+encode(Term, Codec, #pgc_type{namespace = Namespace, name = Name, fields = FieldsDesc}, EncodeFun) ->
+    Fields = from_term(Namespace, Name, FieldsDesc, Term, Codec),
     FieldsCount = length(Fields),
     [<<FieldsCount:32/integer>> | encode_fields(EncodeFun, Fields)].
 
 
-decode(#pgc_type{name = Name, fields = FieldsDesc}, <<_Count:32/integer, Payload/binary>>, Options, DecodeFun) ->
+decode(<<_Count:32/integer, Payload/binary>>, Codec, #pgc_type{namespace = Namespace, name = Name, fields = FieldsDesc}, DecodeFun) ->
     Fields = decode_fields(DecodeFun, Payload),
-    fields_to_term(Name, FieldsDesc, Fields, Options).
+    to_term(Namespace, Name, FieldsDesc, Fields, Codec).
+
 
 % ------------------------------------------------------------------------------
 % Encoding
 % ------------------------------------------------------------------------------
 
 %% @private
-fields_from_term(RecordName, FieldsDesc, Map, Options) when is_map(Map) ->
-    [case Map of
-        #{Name := Value} -> {Oid, Value};
-        #{} -> error(badarg, [RecordName, FieldsDesc, Map, Options])
-    end || {Name, Oid} <- FieldsDesc];
-fields_from_term(RecordName, FieldsDesc, Value, Options) ->
-    error(badarg, [RecordName, FieldsDesc, Value, Options]).
+from_term(_RecordNamespace, _RecordName, FieldsDesc, Map, map) when is_map(Map) ->
+    [{Oid, maps:get(FieldName, Map, null)} || {FieldName, Oid} <- FieldsDesc];
+% from_term(RecordNamespace, RecordName, FieldsDesc, Term, {codec, CodecModule}) ->
+%     FieldNames = [FieldName || {FieldName, _Oid} <- FieldsDesc],
+%     Map = CodecModule:encode(RecordNamespace, RecordName, FieldNames, Term),
+%     [{Oid, maps:get(FieldName, Map)} || {FieldName, Oid} <- FieldsDesc];
+from_term(RecordNamespace, RecordName, FieldsDesc, Value, Codec) ->
+    error(badarg, [RecordNamespace, RecordName, FieldsDesc, Value, Codec]).
 
 
 %% @private
@@ -58,13 +68,13 @@ encode_field(EncodeFun, Oid, Value) ->
 % ------------------------------------------------------------------------------
 
 %% @private
-fields_to_term(_Options, _Name, undefined, Fields) ->
+to_term(_Namespace, _Name, undefined, Fields, map) ->
     % Anonymous record
     lists:foldl(fun ({_Oid, Value}, Acc) ->
         Key = map_size(Acc) + 1,
         Acc#{Key => Value}
     end, #{}, Fields);
-fields_to_term(_Options, _Name, FieldsDesc, Fields) ->
+to_term(_Namespace, _Name, FieldsDesc, Fields, map) ->
     TupleList = lists:zipwith(fun ({FieldName, Oid}, {Oid, FieldValue}) ->
         {FieldName, FieldValue}
     end, FieldsDesc, Fields),

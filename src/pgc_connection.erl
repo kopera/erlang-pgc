@@ -15,8 +15,6 @@
     close/1
 ]).
 
--include("./pgc_statement.hrl").
-
 
 -spec execute(Connection, Statement, Parameters) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pid(),
@@ -75,16 +73,13 @@ prepare_(Connection, StatementName, StatementText) ->
 
 
 %% @private
-execute_(Connection, #pgc_statement{result = ResultDesc} = Statement, Parameters, Options) ->
+execute_(Connection, Statement, Parameters, Options) ->
     ExecutionRef = erlang:monitor(process, Connection, [{alias, demonitor}]),
     try gen_statem:call(Connection, {execute, self(), ExecutionRef, Statement, Parameters}) of
-        {ok, Codec} ->
+        {ok, RowColumns} ->
             RowFormat = maps:get(row, Options, map),
-            RowColumns = [binary_to_atom(Field#pgc_row_field.name) || Field <- ResultDesc],
-            RowTypeIDs = [Field#pgc_row_field.type_oid || Field <- ResultDesc],
             Collector = fun
-                (row, RowData, {Notices, Rows}) ->
-                    RowValues = [pgc_codec:decode(TypeID, Value, Codec) || {TypeID, Value} <- lists:zip(RowTypeIDs, RowData)],
+                (row, RowValues, {Notices, Rows}) ->
                     Row = case RowFormat of
                         map -> maps:from_list(lists:zip(RowColumns, RowValues));
                         tuple -> list_to_tuple(RowValues);

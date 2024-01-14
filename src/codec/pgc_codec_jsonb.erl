@@ -1,4 +1,4 @@
--module(pgc_codec_json).
+-module(pgc_codec_jsonb).
 
 -behaviour(pgc_codec).
 -export([
@@ -15,21 +15,20 @@ init(Options) ->
         #{} -> undefined
     end,
     Info = #{
-        encodes => [json_send],
-        decodes => [json_recv]
+        encodes => [jsonb_send],
+        decodes => [jsonb_recv]
     },
     {Info, Codec}.
 
 
 encode(Term, undefined) ->
     _ = iolist_size(Term),
-    Term;
+    [1 | Term];
 encode(Term, {codec, CodecModule}) ->
-    CodecModule:encode(Term).
+    [1 | CodecModule:encode(Term)].
 
 
-decode(Data, undefined) ->
-    Data;
-decode(Data, {codec, CodecModule}) ->
+decode(<<1, Data/binary>>, undefined) ->
+    <<1, Data/binary>>;
+decode(<<1, Data/binary>>, {codec, CodecModule}) ->
     CodecModule:decode(Data).
-

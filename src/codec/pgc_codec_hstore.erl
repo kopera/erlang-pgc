@@ -2,26 +2,27 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [hstore_send],
         decodes => [hstore_recv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, Value, _Options) when is_map(Value) ->
+encode(Value, _Options) when is_map(Value) ->
     encode_hstore(Value);
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Value, Options) ->
+    error(badarg, [Value, Options]).
 
 
-decode(_Type, Data, _Options) ->
+decode(Data, _Options) ->
     decode_hstore(Data).
 
 

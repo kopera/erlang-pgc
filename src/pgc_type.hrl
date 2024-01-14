@@ -3,6 +3,7 @@
 
 -record(pgc_type, {
     oid :: pgc_type:oid(),
+    namespace :: atom(),
     name :: atom(),
     type :: base | composite | domain | enum | pseudo | range | multirange | other,
     send :: atom(),

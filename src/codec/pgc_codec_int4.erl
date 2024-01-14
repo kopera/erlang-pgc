@@ -2,24 +2,25 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [int4send],
         decodes => [int4recv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, Value, _Options) when is_integer(Value), Value >= -2147483648, Value =< 2147483647 ->
+encode(Value, _Options) when is_integer(Value), Value >= -2147483648, Value =< 2147483647 ->
     <<Value:32/signed-integer>>;
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Value, Options) ->
+    error(badarg, [Value, Options]).
 
 
-decode(_Type, <<Value:32/signed-integer>>, _Options) ->
+decode(<<Value:32/signed-integer>>, _Options) ->
     Value.
