@@ -1,6 +1,6 @@
 -module(pgc_codec_array).
 -export([
-    info/1,
+    init/1,
     encode/4,
     decode/4
 ]).
@@ -11,21 +11,22 @@
 -include("../pgc_type.hrl").
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [array_send, int2vectorsend, oidvectorsend],
         decodes => [array_recv, int2vectorrecv, oidvectorrecv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(#pgc_type{element = ElementOid}, Values, _Options, EncodeFun) when is_list(Values) ->
-    {Flags, EncodedElements} = encode_elements(EncodeFun, ElementOid, Values),
-    [encode_header(ElementOid, Flags, Values) | EncodedElements];
-encode(Type, Value, Options, EncodeFun) ->
-    error(badarg, [Type, Value, Options, EncodeFun]).
+encode(List, _Options, #pgc_type{element = ElementOid}, EncodeFun) when is_list(List) ->
+    {Flags, EncodedElements} = encode_elements(EncodeFun, ElementOid, List),
+    [encode_header(ElementOid, Flags, List) | EncodedElements];
+encode(Term, Options, Type, EncodeFun) ->
+    error(badarg, [Term, Options, Type, EncodeFun]).
 
 
-decode(#pgc_type{element = ElementOid}, Data, _Options, DecodeFun) ->
+decode(Data, _Options, #pgc_type{element = ElementOid}, DecodeFun) ->
     {Lengths, _Flags, ElementOid, Rest} = decode_header(Data),
     Elements = decode_elements(DecodeFun, ElementOid, Rest),
     unflatten(Lengths, Elements).

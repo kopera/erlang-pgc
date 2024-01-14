@@ -2,26 +2,57 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/4,
+    decode/4
 ]).
 
+-include("../pgc_type.hrl").
 
-info(_Options) ->
-    #{
+
+init(Options) ->
+    Codec = case Options of
+        #{enum := #{codec := C}} when is_atom(C) -> {codec, C};
+        #{enum := #{codec := _}} -> erlang:error(badarg, [Options]);
+        #{enum := atom} -> atom;
+        #{enum := existing_atom} -> existing_atom;
+        #{enum := attempt_atom} -> attempt_atom;
+        #{enum := _} -> erlang:error(badarg, [Options]);
+        #{} -> binary
+    end,
+    Info = #{
         encodes => [enum_send],
         decodes => [enum_recv]
-    }.
+    },
+    {Info, Codec}.
 
 
-encode(_Type, Atom, _Options) when is_atom(Atom) ->
-    atom_to_binary(Atom, utf8);
-encode(_Type, String, _Options) when is_binary(String); is_list(String) ->
-    unicode:characters_to_binary(String, utf8);
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Term, atom, _Type, _) when is_atom(Term) ->
+    atom_to_binary(Term, utf8);
+encode(Term, existing_atom, _Type, _) when is_atom(Term) ->
+    atom_to_binary(Term, utf8);
+encode(Term, attempt_atom, _Type, _) when is_atom(Term) ->
+    atom_to_binary(Term, utf8);
+encode(Term, binary, _Type, _) ->
+    _ = iolist_size(Term),
+    Term;
+encode(Term, {codec, CodecModule}, #pgc_type{namespace = Namespace, name = Name}, _) ->
+    CodecModule:encode(Namespace, Name, Term);
+encode(Term, Config, Type, EncodeFun) ->
+    error(badarg, [Term, Config, Type, EncodeFun]).
 
 
-decode(_Type, Binary, _Options) ->
-    binary_to_atom(Binary, utf8).
+decode(Data, atom, _Type, _) ->
+    erlang:binary_to_atom(Data, utf8);
+decode(Data, existing_atom, _Type, _) ->
+    erlang:binary_to_existing_atom(Data, utf8);
+decode(Data, attempt_atom, _Type, _) ->
+    try erlang:binary_to_existing_atom(Data, utf8) of
+        Term -> Term
+    catch
+        error:badarg -> Data
+    end;
+decode(Data, binary, _Type, _) ->
+    Data;
+decode(Data, {codec, CodecModule}, #pgc_type{namespace = Namespace, name = Name}, _) ->
+    CodecModule:decode(Namespace, Name, Data).

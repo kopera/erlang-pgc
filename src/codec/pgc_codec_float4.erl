@@ -2,36 +2,37 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [float4send],
         decodes => [float4recv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, 'NaN', _Options) ->
+encode('NaN', _Options) ->
     <<127, 192, 0, 0>>;
-encode(_Type, infinity, _Options) ->
+encode(infinity, _Options) ->
     <<127, 128, 0, 0>>;
-encode(_Type, '-infinity', _Options) ->
+encode('-infinity', _Options) ->
     <<255, 128, 0, 0>>;
-encode(_Type, Value, _Options) when is_number(Value) ->
+encode(Value, _Options) when is_number(Value) ->
     <<Value:32/signed-float>>;
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Value, Options) ->
+    error(badarg, [Value, Options]).
 
 
-decode(_Type, <<127, 192, 0, 0>>, _Options) ->
+decode(<<127, 192, 0, 0>>, _Options) ->
     'NaN';
-decode(_Type, <<127, 128, 0, 0>>, _Options) ->
+decode(<<127, 128, 0, 0>>, _Options) ->
     infinity;
-decode(_Type, <<255, 128, 0, 0>>, _Options) ->
+decode(<<255, 128, 0, 0>>, _Options) ->
     '-infinity';
-decode(_Type, <<Value:32/signed-float>>, _Options) ->
+decode(<<Value:32/signed-float>>, _Options) ->
     Value.

@@ -2,24 +2,24 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [byteasend, unknownsend],
         decodes => [bytearecv, unknownrecv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, Bytes, _Options) ->
+encode(Bytes, _Options) ->
     _ = iolist_size(Bytes),
     Bytes.
 
 
-decode(_Type, Bytes, _Options) when is_binary(Bytes) ->
+decode(Bytes, _Options) when is_binary(Bytes) ->
     Bytes.
-

@@ -2,29 +2,43 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(Options) ->
+    Codec = case Options of
+        #{timestamp := {calendar, time}} -> {calendar, time};
+        #{timestamp := Unit}
+            when Unit =:= second
+              ; Unit =:= millisecond
+              ; Unit =:= microsecond
+              ; Unit =:= nanosecond
+              ; Unit =:= native -> Unit;
+        #{timestamp := _} ->
+            erlang:error(badarg, [Options]);
+        #{} ->
+            native
+    end,
+    Info = #{
         encodes => [time_send],
         decodes => [time_recv]
-    }.
+    },
+    {Info, Codec}.
 
 
-encode(_Type, Term, Options) ->
-    {Hours, Minutes, Seconds, Microseconds} = from_term(Options, Term),
-    Value = (calendar:time_to_seconds({Hours, Minutes, Seconds}) * 1000000) + Microseconds,
-    <<Value:64/signed-integer>>.
+encode(Term, Codec) ->
+    Time = from_term(Term, Codec),
+    <<Time:64/signed-integer>>.
 
 
-decode(_Type, <<Time:64/signed-integer>>, Options) ->
-    Microseconds = Time rem 1000000,
-    {Hours, Minutes, Seconds} = calendar:seconds_to_time(Time div 1000000),
-    to_term(Options, {Hours, Minutes, Seconds, Microseconds}).
+decode(<<Time:64/signed-integer>>, Codec) ->
+    % Microseconds = Time rem 1000000,
+    % {Hours, Minutes, Seconds} = calendar:seconds_to_time(Time div 1000000),
+    % to_term({Hours, Minutes, Seconds, Microseconds}).
+    to_term(Time, Codec).
 
 
 % ------------------------------------------------------------------------------
@@ -32,14 +46,11 @@ decode(_Type, <<Time:64/signed-integer>>, Options) ->
 % ------------------------------------------------------------------------------
 
 %% Internals
-from_term(_Options, {Hours, Minutes, Seconds}) when is_integer(Hours), is_integer(Minutes), is_integer(Seconds) ->
-    {Hours, Minutes, Seconds, 0};
-from_term(_Options, {Hours, Minutes, SecondsFloat}) when is_integer(Hours), is_integer(Minutes), is_float(SecondsFloat) ->
-    Seconds = trunc(SecondsFloat),
-    MicroSeconds = trunc((SecondsFloat - Seconds) * 1000000),
-    {Hours, Minutes, Seconds, MicroSeconds};
-from_term(Options, Term) ->
-    error(badarg, [Options, Term]).
+from_term(Term, {calendar, time}) ->
+    Time = calendar:time_to_seconds(Term),
+    erlang:convert_time_unit(Time, second, microsecond);
+from_term(Term, Unit) ->
+    erlang:convert_time_unit(Term, Unit, microsecond).
 
 
 % ------------------------------------------------------------------------------
@@ -47,7 +58,8 @@ from_term(Options, Term) ->
 % ------------------------------------------------------------------------------
 
 %% Internals
-to_term(_Options, {Hours, Minutes, Seconds, 0}) ->
-    {Hours, Minutes, Seconds};
-to_term(_Options, {Hours, Minutes, Seconds, MicroSeconds}) ->
-    {Hours, Minutes, Seconds + (MicroSeconds / 1000000)}.
+to_term(MicroSeconds, {calendar, time}) ->
+    Seconds = erlang:convert_time_unit(MicroSeconds, microsecond, second),
+    calendar:seconds_to_time(Seconds);
+to_term(MicroSeconds, Unit) ->
+    erlang:convert_time_unit(MicroSeconds, microsecond, Unit).

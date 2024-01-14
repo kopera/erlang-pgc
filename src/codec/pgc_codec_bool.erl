@@ -2,28 +2,29 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [boolsend],
         decodes => [boolrecv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, true, _Options) ->
+encode(true, _Options) ->
     <<1>>;
-encode(_Type, false, _Options) ->
+encode(false, _Options) ->
     <<0>>;
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Term, Options) ->
+    error(badarg, [Term, Options]).
 
 
-decode(_Type, <<1>>, _Options) ->
+decode(<<1>>, _Options) ->
     true;
-decode(_Type, <<0>>, _Options) ->
+decode(<<0>>, _Options) ->
     false.

@@ -2,36 +2,39 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
-info(_Options) ->
-    #{
+
+init(_Options) ->
+    Info = #{
         encodes => [float8send],
         decodes => [float8recv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, 'NaN', _Options) ->
+
+encode('NaN', _Options) ->
     <<127, 248, 0, 0, 0, 0, 0, 0>>;
-encode(_Type, infinity, _Options) ->
+encode(infinity, _Options) ->
     <<127, 240, 0, 0, 0, 0, 0, 0>>;
-encode(_Type, '-infinity', _Options) ->
+encode('-infinity', _Options) ->
     <<255, 240, 0, 0, 0, 0, 0, 0>>;
-encode(_Type, Value, _Options) when is_number(Value) ->
+encode(Value, _Options) when is_number(Value) ->
     <<Value:64/signed-float>>;
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Value, Options) ->
+    error(badarg, [Value, Options]).
 
 
-decode(_Type, <<127, 248, 0, 0, 0, 0, 0, 0>>, _Options) ->
+decode(<<127, 248, 0, 0, 0, 0, 0, 0>>, _Options) ->
     'NaN';
-decode(_Type, <<127, 240, 0, 0, 0, 0, 0, 0>>, _Options) ->
+decode(<<127, 240, 0, 0, 0, 0, 0, 0>>, _Options) ->
     infinity;
-decode(_Type, <<255, 240, 0, 0, 0, 0, 0, 0>>, _Options) ->
+decode(<<255, 240, 0, 0, 0, 0, 0, 0>>, _Options) ->
     '-infinity';
-decode(_Type, <<Value:64/signed-float>>, _Options) ->
+decode(<<Value:64/signed-float>>, _Options) ->
     Value.
 

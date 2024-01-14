@@ -7,7 +7,8 @@
     init/1,
     callback_mode/0,
     handle_event/4,
-    terminate/3
+    terminate/3,
+    format_status/1
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -20,6 +21,7 @@
 -define(refresh_types_statement_text, <<
 "select
     pg_type.oid as oid,
+    pg_namespace.nspname as namespace,
     pg_type.typname as name,
     pg_type.typtype as type,
     pg_type.typsend as send,
@@ -43,7 +45,8 @@
         order by pg_attribute.attnum
     ) as fields_types
 from pg_catalog.pg_type
-  left join pg_catalog.pg_range on pg_range.rngtypid = pg_type.oid"
+  left join pg_catalog.pg_range on pg_range.rngtypid = pg_type.oid
+  left join pg_catalog.pg_namespace on pg_namespace.oid = pg_type.typnamespace"
 >>).
 
 % ------------------------------------------------------------------------------
@@ -59,7 +62,9 @@ from pg_catalog.pg_type
     parameters :: pgc_connection:parameters(),
 
     types :: pgc_types:t(),
-    statements :: #{unicode:unicode_binary() => #pgc_statement{}}
+    statements :: #{unicode:unicode_binary() => #pgc_statement{}},
+
+    codecs :: pgc_codecs:t()
 }).
 
 % ------------------------------------------------------------------------------
@@ -113,7 +118,8 @@ from pg_catalog.pg_type
 
     statement_name :: unicode:unicode_binary(),
     statement_parameters :: [iodata()],
-    statement_result_format :: [text | binary]
+    statement_result_format :: nonempty_list(text | binary),
+    statement_result_row_decoder :: fun(([binary()]) -> {ok, term()} | {error, pgc_error:t()})
 }).
 
 -record(refreshing_types, {
@@ -168,7 +174,9 @@ handle_event({call, From}, {open, Transport, Options}, #disconnected{}, undefine
         parameters = #{},
 
         types = pgc_types:new(),
-        statements = #{}
+        statements = #{},
+
+        codecs = pgc_codecs:new([], #{})
     }};
 
 % State: authenticating --------------------------------------------------------
@@ -312,24 +320,35 @@ handle_event({call, From}, {prepare, StatementName, StatementHash, StatementText
     end;
 
 handle_event({call, From}, {execute, ClientPid, ExecutionRef, #pgc_statement{} = Statement, Parameters}, #ready{}, #connection{} = ConnectionData) ->
-    #connection{parameters = ConnectionParameters, types = ConnectionTypes} = ConnectionData,
+    #connection{types = ConnectionTypes, codecs = Codecs} = ConnectionData,
     #pgc_statement{name = StatementName, parameters = ParametersDesc, result = ResultDesc} = Statement,
     ParametersTypeIDs = ParametersDesc,
-    ResultTypeIDs = [Field#pgc_row_field.type_oid || Field <- ResultDesc],
-    case pgc_types:lookup(ParametersTypeIDs ++ ResultTypeIDs, ConnectionTypes) of
-        {Types, []} ->
+    RowColumns = [binary_to_atom(Field#pgc_row_field.name) || Field <- ResultDesc],
+    RowTypeIDs = [Field#pgc_row_field.type_oid || Field <- ResultDesc],
+    case pgc_types:find_all(ParametersTypeIDs ++ RowTypeIDs, ConnectionTypes) of
+        {ok, Types} ->
+            ParametersTypes = [maps:get(TypeID, Types) || TypeID <- ParametersTypeIDs],
+            RowTypes = [maps:get(TypeID, Types) || TypeID <- RowTypeIDs],
+            GetTypeFun = fun (TypeID) ->
+                case pgc_types:find(TypeID, ConnectionTypes) of
+                    {ok, Type} -> Type;
+                    error -> erlang:error({type_missing, TypeID})
+                end
+            end,
             maybe
-                {ok, Codec} ?= pgc_codec:init(Types, ConnectionParameters, #{}),
-                {ok, StatementParameters} ?= encode_parameters(Codec, ParametersTypeIDs, Parameters),
+                {ok, StatementParameters} ?= encode_parameters(ParametersTypes, Parameters, GetTypeFun, Codecs),
                 {next_state, #executing{
                     client_pid = ClientPid,
                     client_monitor = erlang:monitor(process, ClientPid),
                     execution_ref = ExecutionRef,
                     statement_name = StatementName,
                     statement_parameters = StatementParameters,
-                    statement_result_format = [binary]
+                    statement_result_format = [binary],
+                    statement_result_row_decoder = fun (RowData) ->
+                        decode_row(RowTypes, RowData, GetTypeFun, Codecs)
+                    end
                 }, ConnectionData, [
-                    {reply, From, {ok, Codec}}
+                    {reply, From, {ok, RowColumns}}
                 ]}
             else
                 {error, _} = Error ->
@@ -337,7 +356,7 @@ handle_event({call, From}, {execute, ClientPid, ExecutionRef, #pgc_statement{} =
                         {reply, From, Error}
                     ]}
             end;
-        {_Types, MissingTypeIDs} ->
+        {error, _, MissingTypeIDs} ->
             {next_state, #refreshing_types{missing = MissingTypeIDs}, ConnectionData, [postpone]}
     end;
 
@@ -467,10 +486,15 @@ handle_event(internal, #msg_notice_response{fields = Notice}, #executing{} = Exe
     ExecutionRef ! {notice, ExecutionRef, Notice},
     keep_state_and_data;
 
-handle_event(internal, #msg_data_row{values = Row}, #executing{} = Executing, #connection{} = _ConnectionData) ->
-    #executing{execution_ref = ExecutionRef} = Executing,
-    ExecutionRef ! {data, ExecutionRef, {row, Row}},
-    keep_state_and_data;
+handle_event(internal, #msg_data_row{values = RowData}, #executing{} = Executing, #connection{} = _ConnectionData) ->
+    #executing{execution_ref = ExecutionRef, statement_result_row_decoder = RowDecoder} = Executing,
+    case RowDecoder(RowData) of
+        {ok, Row} ->
+            ExecutionRef ! {data, ExecutionRef, {row, Row}},
+            keep_state_and_data;
+        {error, Error} ->
+            {stop, {error, Error}}
+    end;
 
 handle_event(internal, #msg_command_complete{tag = Tag}, #executing{} = Executing, #connection{} = ConnectionData) ->
     #executing{client_monitor = ClientMonitor, execution_ref = ExecutionRef} = Executing,
@@ -518,7 +542,7 @@ handle_event(enter, _, #refreshing_types{}, #connection{} = ConnectionData) ->
             statement = ?refresh_types_statement_name,
             portal = <<>>,
             parameters = [],
-            results = [binary, binary, binary, text, text, binary, binary, binary, binary]
+            results = [binary, binary, binary, binary, text, text, binary, binary, binary, binary]
         },
         #msg_execute{portal = <<>>},
         #msg_sync{}
@@ -542,7 +566,7 @@ handle_event(internal, #msg_data_row{values = Row}, #refreshing_types{}, #connec
 handle_event(internal, #msg_command_complete{}, #refreshing_types{} = RefreshingTypes, #connection{} = ConnectionData) ->
     #connection{types = Types} = ConnectionData,
     #refreshing_types{missing = MissingTypeIDs} = RefreshingTypes,
-    {_, []} = pgc_types:lookup(MissingTypeIDs, Types),
+    {ok, _} = pgc_types:find_all(MissingTypeIDs, Types),
     {next_state, #syncing{}, ConnectionData};
 
 handle_event(internal, #msg_error_response{} = Message, #refreshing_types{}, #connection{}) ->
@@ -640,6 +664,17 @@ terminate(_Reason, _State, undefined) ->
 terminate(_Reason, _State, #connection{transport = Transport}) ->
     pgc_transport:close(Transport).
 
+
+%% @hidden
+format_status(Status) ->
+    maps:map(fun
+        (data, #connection{} = Connection) ->
+            Connection#connection{types = omitted};
+        (_, Value) ->
+                Value
+    end, Status).
+
+
 % ------------------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------------------
@@ -682,27 +717,28 @@ send_cancel_request(Transport, {Id, Secret}) ->
 
 
 %% @private
-decode_type([Oid, Name, Type, Send, Recv, ElementType, ParentType, FieldsNames, FieldsTypes]) ->
+decode_type([Oid, Namespace, Name, Type, Send, Recv, ElementType, ParentType, FieldsNames, FieldsTypes]) ->
     #pgc_type{
-        oid = pgc_codec_oid:decode(Oid),
-        name = binary_to_atom(pgc_codec_text:parse(Name), utf8),
-        type = case pgc_codec_text:parse(Type) of
-            <<"b">> -> base;
-            <<"c">> -> composite;
-            <<"d">> -> domain;
-            <<"e">> -> enum;
-            <<"p">> -> pseudo;
-            <<"r">> -> range;
-            <<"m">> -> multirange;
+        oid = pgc_codec_oid:decode(Oid, []),
+        namespace = binary_to_atom(pgc_codec_text:decode(Namespace, []), utf8),
+        name = binary_to_atom(pgc_codec_text:decode(Name, []), utf8),
+        type = case pgc_codec_char:decode(Type, []) of
+            $b -> base;
+            $c -> composite;
+            $d -> domain;
+            $e -> enum;
+            $p -> pseudo;
+            $r -> range;
+            $m -> multirange;
             _ -> other
         end,
-        send = binary_to_atom(pgc_codec_text:parse(Send), utf8),
-        recv = binary_to_atom(pgc_codec_text:parse(Recv), utf8),
-        element = case pgc_codec_oid:decode(ElementType) of
+        send = binary_to_atom(pgc_codec_text:decode(Send, []), utf8),
+        recv = binary_to_atom(pgc_codec_text:decode(Recv, []), utf8),
+        element = case pgc_codec_oid:decode(ElementType, []) of
             0 -> undefined;
             ElementOid -> ElementOid
         end,
-        parent = case pgc_codec_oid:decode(ParentType) of
+        parent = case pgc_codec_oid:decode(ParentType, []) of
             0 -> undefined;
             ParentOid -> ParentOid
         end,
@@ -712,27 +748,51 @@ decode_type([Oid, Name, Type, Send, Recv, ElementType, ParentType, FieldsNames, 
 
 %% @private
 decode_type_fields(Names, Types) ->
-    lists:zip(
-        pgc_codec_array:decode(fun (_Oid, V) -> binary_to_atom(pgc_codec_text:parse(V), utf8) end, Names),
-        pgc_codec_array:decode(fun (_Oid, V) -> pgc_codec_oid:decode(V) end, Types)
-    ).
+    Fields = lists:zip(
+        pgc_codec_array:decode(fun (_Oid, V) -> binary_to_atom(pgc_codec_text:decode(V, []), utf8) end, Names),
+        pgc_codec_array:decode(fun (_Oid, V) -> pgc_codec_oid:decode(V, []) end, Types)
+    ),
+    if
+        Fields =:= [] -> undefined;
+        Fields =/= [] -> Fields
+    end.
 
 
 %% @private
-encode_parameters(Codec, TypeIDs, Values) when length(TypeIDs) =:= length(Values) ->
-    encode_parameters(Codec, TypeIDs, Values, []);
-encode_parameters(_Codec, TypeIDs, Values) ->
-    {error, pgc_error:protocol_violation({"Statement requires ~b parameters, ~b supplied", [length(TypeIDs), length(Values)]})}.
+encode_parameters(Types, Values, GetTypeFun, Codecs) when length(Types) =:= length(Values) ->
+    encode_parameters(Types, Values, GetTypeFun, Codecs, []);
+encode_parameters(Types, Values, _GetTypeFun, _Codecs) ->
+    {error, pgc_error:protocol_violation({"Statement requires ~b parameters, ~b supplied", [length(Types), length(Values)]})}.
 
 %% @private
-encode_parameters(_Codec, [], [], Acc) ->
+encode_parameters([], [], _GetTypeFun, _Codecs, Acc) ->
     {ok, lists:reverse(Acc)};
-encode_parameters(Codec, [TypeID | TypeIDs], [Value | Values], Acc) ->
-    try pgc_codec:encode(TypeID, Value, Codec) of
+encode_parameters([Type | Types], [Value | Values], GetTypeFun, Codecs, Acc) ->
+    try pgc_codecs:encode(Type, Value, GetTypeFun, Codecs) of
         Encoded ->
-            encode_parameters(Codec, TypeIDs, Values, [Encoded | Acc])
+            encode_parameters(Types, Values, GetTypeFun, Codecs, [Encoded | Acc])
     catch
         error:badarg ->
-            Type = pgc_codec:get_type(TypeID, Codec),
             {error, pgc_error:invalid_parameter_value(length(Acc) + 1, Value, Type)}
+    end.
+
+
+%% @private
+decode_row(RowTypes, RowData, GetTypeFun, Codecs) ->
+    decode_row(RowTypes, RowData, GetTypeFun, Codecs, []).
+
+%% @private
+decode_row([], [], _GetTypeFun, _Codecs, Acc) ->
+    {ok, lists:reverse(Acc)};
+decode_row([Type | Types], [Value | Values], GetTypeFun, Codecs, Acc) ->
+    try pgc_codecs:decode(Type, Value, GetTypeFun, Codecs) of
+        Encoded ->
+            decode_row(Types, Values, GetTypeFun, Codecs, [Encoded | Acc])
+    catch
+        error:badarg ->
+            TypeName = Type#pgc_type.name,
+            Index = length(Acc) + 1,
+            {error, pgc_error:protocol_violation(
+                {"Failed to decode row field of type '~s' value '~p' at index ~b", [TypeName, Value, Index]}
+            )}
     end.

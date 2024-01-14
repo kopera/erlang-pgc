@@ -2,24 +2,25 @@
 
 -behaviour(pgc_codec).
 -export([
-    info/1,
-    encode/3,
-    decode/3
+    init/1,
+    encode/2,
+    decode/2
 ]).
 
 
-info(_Options) ->
-    #{
+init(_Options) ->
+    Info = #{
         encodes => [uuid_send],
         decodes => [uuid_recv]
-    }.
+    },
+    {Info, []}.
 
 
-encode(_Type, <<_:128>> = UUID, _Options) ->
+encode(<<_:128>> = UUID, _Options) ->
     UUID;
-encode(Type, Value, Options) ->
-    error(badarg, [Type, Value, Options]).
+encode(Value, Options) ->
+    error(badarg, [Value, Options]).
 
 
-decode(_Type, <<_:128>> = UUID, _Options) ->
+decode(<<_:128>> = UUID, _Options) ->
     UUID.
