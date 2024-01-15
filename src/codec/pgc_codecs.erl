@@ -1,5 +1,6 @@
 -module(pgc_codecs).
 -export([
+    new/1,
     new/2,
     encode/4,
     decode/4
@@ -12,10 +13,16 @@
 
 
 -record(codecs, {
-    codecs :: #{atom() => {module(), State :: term(), Format :: format()}}
+    encoders :: #{atom() => {module(), State :: term(), Format :: format()}},
+    decoders :: #{atom() => {module(), State :: term(), Format :: format()}}
 }).
 -opaque t() :: #codecs{}.
 -type format() :: text | binary.
+
+
+-spec new(options()) -> t().
+new(Options) ->
+    new([], Options).
 
 
 -spec new([module() | {module(), map()}], options()) -> t().
@@ -32,14 +39,15 @@ new(ExtraCodecs, Options) ->
         end, CodecsAcc, Encodes)
     end, #{}, [init_codec(CodecModule, Options) || CodecModule <- CodecModules]),
     #codecs{
-        codecs = Codecs
+        encoders = Codecs,
+        decoders = Codecs
     }.
 
 
 encode(_Type, null, _GetTypeFun, _Codecs) ->
     {binary, null};
-encode(#pgc_type{send = SendProc} = Type, Term, GetTypeFun, #codecs{codecs = Codecs}) ->
-    case Codecs of
+encode(#pgc_type{send = SendProc} = Type, Term, GetTypeFun, #codecs{} = Codecs) ->
+    case Codecs#codecs.encoders of
         #{SendProc := {CodecModule, CodecState}} ->
             case erlang:function_exported(CodecModule, encode, 4) of
                 true ->
@@ -57,8 +65,8 @@ encode(#pgc_type{send = SendProc} = Type, Term, GetTypeFun, #codecs{codecs = Cod
 
 decode(_Type, null, _GetTypeFun, _Codecs) ->
     null;
-decode(#pgc_type{send = SendProc} = Type, Data, GetTypeFun, #codecs{codecs = Codecs}) ->
-    case Codecs of
+decode(#pgc_type{send = SendProc} = Type, Data, GetTypeFun, #codecs{} = Codecs) ->
+    case Codecs#codecs.decoders of
         #{SendProc := {CodecModule, CodecState}} ->
             case erlang:function_exported(CodecModule, decode, 4) of
                 true ->
@@ -87,7 +95,7 @@ init_codec(CodecModule, GlobalOptions) ->
 default_codecs(_Options) ->
     [
         pgc_codec_array,
-        % pgc_codec_bitstring,
+        pgc_codec_bitstring,
         pgc_codec_bool,
         pgc_codec_bytea,
         pgc_codec_char,
@@ -111,11 +119,11 @@ default_codecs(_Options) ->
         % pgc_codec_range,
         pgc_codec_record,
         pgc_codec_text,
-        % pgc_codec_tid,
+        pgc_codec_tid,
         pgc_codec_time,
         pgc_codec_timestamp,
         % pgc_codec_tsvector,
         pgc_codec_uuid,
-        pgc_codec_void
-        % pgc_codec_xid8
+        pgc_codec_void,
+        pgc_codec_xid8
     ].
