@@ -2,6 +2,8 @@
 -export([
     execute/3,
     execute/4
+    % transaction/3,
+    % reset/1
 ]).
 -export_type([
     options/0,
@@ -10,7 +12,7 @@
 
 
 -export([
-    start_link/1,
+    start_link/2,
     open/3,
     close/1
 ]).
@@ -127,10 +129,13 @@ execute_collect(Collector, ExecutionRef, Acc0) ->
 % ------------------------------------------------------------------------------
 
 %% @private
--spec start_link(pid()) -> {ok, pid()}.
-start_link(OwnerPid) ->
+-spec start_link(pid(), Options) -> {ok, pid()} when
+    Options :: #{
+        hibernate_after => timeout()
+    }.
+start_link(OwnerPid, Options) ->
     {ok, _Pid} = gen_statem:start_link(pgc_connection_statem, OwnerPid, [
-        {hibernate_after, 5000}
+        {hibernate_after, maps:get(hibernate_after, Options, 5000)}
     ]).
 
 

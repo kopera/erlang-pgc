@@ -1,7 +1,7 @@
 %% @private
 -module(pgc_connections_sup).
 -export([
-    start_connection/1,
+    start_connection/2,
     stop_connection/1
 ]).
 
@@ -16,9 +16,12 @@
 
 
 %% @private
--spec start_connection(pid()) -> {ok, pid()}.
-start_connection(Owner) ->
-    case supervisor:start_child(?MODULE, [Owner]) of
+-spec start_connection(pid(), Options) -> {ok, pid()} when
+    Options :: #{
+        hibernate_after => timeout()
+    }.
+start_connection(Owner, Options) ->
+    case supervisor:start_child(?MODULE, [Owner, Options]) of
         {ok, Connection} when is_pid(Connection) -> {ok, Connection}
     end.
 
