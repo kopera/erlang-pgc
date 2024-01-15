@@ -176,7 +176,7 @@ handle_event({call, From}, {open, Transport, Options}, #disconnected{}, undefine
         types = pgc_types:new(),
         statements = #{},
 
-        codecs = pgc_codecs:new([], #{})
+        codecs = pgc_codecs:new(#{})
     }};
 
 % State: authenticating --------------------------------------------------------
