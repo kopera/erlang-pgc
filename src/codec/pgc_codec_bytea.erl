@@ -16,10 +16,10 @@ init(_Options) ->
     {Info, []}.
 
 
-encode(Bytes, _Options) ->
-    _ = iolist_size(Bytes),
-    Bytes.
+encode(Term, _Options) ->
+    _ = iolist_size(Term),
+    Term.
 
 
-decode(Bytes, _Options) when is_binary(Bytes) ->
-    Bytes.
+decode(Data, _Options) when is_binary(Data) ->
+    Data.

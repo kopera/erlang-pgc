@@ -12,7 +12,7 @@ init(Options) ->
     Codec = case Options of
         #{json := #{codec := C}} when is_atom(C) -> {codec, C};
         #{json := #{codec := _}} -> erlang:error(badarg, [Options]);
-        #{} -> undefined
+        #{} -> binary
     end,
     Info = #{
         encodes => [jsonb_send],
@@ -21,14 +21,14 @@ init(Options) ->
     {Info, Codec}.
 
 
-encode(Term, undefined) ->
+encode(Term, binary) ->
     _ = iolist_size(Term),
     [1 | Term];
 encode(Term, {codec, CodecModule}) ->
     [1 | CodecModule:encode(Term)].
 
 
-decode(<<1, Data/binary>>, undefined) ->
+decode(<<1, Data/binary>>, binary) ->
     <<1, Data/binary>>;
 decode(<<1, Data/binary>>, {codec, CodecModule}) ->
     CodecModule:decode(Data).
