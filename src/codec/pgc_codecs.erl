@@ -122,6 +122,7 @@ default_codecs(_Options) ->
         pgc_codec_text,
         pgc_codec_tid,
         pgc_codec_time,
+        pgc_codec_timetz,
         pgc_codec_timestamp,
         % pgc_codec_tsvector,
         pgc_codec_uuid,

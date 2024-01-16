@@ -1,5 +1,5 @@
 %% @private
--module(pgc_codec_time).
+-module(pgc_codec_timetz).
 -compile({inline, [
     from_term/2,
     to_term/2
@@ -28,19 +28,19 @@ init(Options) ->
             native
     end,
     Info = #{
-        encodes => [time_send],
-        decodes => [time_recv]
+        encodes => [timetz_send],
+        decodes => [timetz_recv]
     },
     {Info, Codec}.
 
 
 encode(Term, Codec) ->
-    Time = from_term(Term, Codec),
-    <<Time:64/signed-integer>>.
+    {Time, Offset} = from_term(Term, Codec),
+    <<Time:64/signed-integer, Offset:32/signed-integer>>.
 
 
-decode(<<Time:64/signed-integer>>, Codec) ->
-    to_term(Time, Codec).
+decode(<<Time:64/signed-integer, Offset:32/signed-integer>>, Codec) ->
+    to_term({Time, Offset}, Codec).
 
 
 % ------------------------------------------------------------------------------
@@ -49,8 +49,10 @@ decode(<<Time:64/signed-integer>>, Codec) ->
 
 %% Internals
 from_term(Term, {calendar, time}) ->
-    Time = calendar:time_to_seconds(Term),
-    erlang:convert_time_unit(Time, second, microsecond);
+    Seconds = calendar:time_to_seconds(Term),
+    MicroSeconds = erlang:convert_time_unit(Seconds, second, microsecond),
+    Offset = 0,
+    {MicroSeconds, Offset};
 from_term(Term, Unit) ->
     erlang:convert_time_unit(Term, Unit, microsecond).
 
@@ -60,8 +62,9 @@ from_term(Term, Unit) ->
 % ------------------------------------------------------------------------------
 
 %% Internals
-to_term(MicroSeconds, {calendar, time}) ->
-    Seconds = erlang:convert_time_unit(MicroSeconds, microsecond, second),
+to_term({MicroSeconds, Offset}, {calendar, time}) ->
+    Seconds = erlang:convert_time_unit(MicroSeconds, microsecond, second) + Offset,
     calendar:seconds_to_time(Seconds);
-to_term(MicroSeconds, Unit) ->
-    erlang:convert_time_unit(MicroSeconds, microsecond, Unit).
+to_term({MicroSeconds, Offset}, Unit) ->
+    erlang:convert_time_unit(MicroSeconds, microsecond, Unit) + 
+    erlang:convert_time_unit(Offset, second, Unit).
