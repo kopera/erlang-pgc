@@ -13,7 +13,7 @@
     decode_basic/1,
     decode_uuid/1,
     decode_arrays/1,
-    % decode_time/1,
+    decode_time/1,
     % decode_date/1,
     % decode_datetime/1,
     % decode_interval/1,
@@ -21,6 +21,10 @@
     decode_oid/1
     % decode_network/1
 ]).
+
+-define(ASSERT, true).
+-include_lib("stdlib/include/assert.hrl").
+
 
 suite() ->
     [
@@ -39,7 +43,7 @@ groups() ->
             decode_basic,
             decode_uuid,
             decode_arrays,
-            % decode_time,
+            decode_time,
             % decode_date,
             % decode_datetime,
             % decode_interval,
@@ -96,27 +100,36 @@ decode_uuid(Config) ->
 
 decode_arrays(Config) ->
     Connection = proplists:get_value(connection, Config),
-    {ok, _, [{[]}]} = execute(Connection, "select array[]::integer[]"),
-    {ok, _, [{[1]}]} = execute(Connection, "select array[1]"),
-    {ok, _, [{[1, 2]}]} = execute(Connection, "select array[1, 2]"),
-    {ok, _, [{[[0], [1]]}]} = execute(Connection, "select array[[0], [1]]"),
-    {ok, _, [{[[0]]}]} = execute(Connection, "select array[array[0]]").
+    lists:foreach(fun ({SQLExpr, Expect}) ->
+        {ok, _, [{Result}]} = execute(Connection, ["select " | SQLExpr]),
+        ?assertEqual(Expect, Result, "(" ++ SQLExpr ++ ") result mismatch")
+    end, [
+        {"array[]::integer[]",          []},
+        {"array[1]",                    [1]},
+        {"array[1, 2]",                 [1, 2]},
+        {"array[[0], [1]]",             [[0], [1]]},
+        {"array[array[0]]",             [[0]]},
+        {"'{}'::integer[]",             []},
+        {"'{hello}'::varchar[]",        [<<"hello">>]}
+    ]).
 
-% decode_time(Config) ->
-%     #{rows := [{#pgsql_time{hour = 0, minute = 0, second = 0, microsecond = 0}}]}
-%         = execute("SELECT time '00:00:00'", Config),
-%     #{rows := [{#pgsql_time{hour = 1, minute = 2, second = 3, microsecond = 0}}]}
-%         = execute("SELECT time '01:02:03'", Config),
-%     #{rows := [{#pgsql_time{hour = 23, minute = 59, second = 59, microsecond = 0}}]}
-%         = execute("SELECT time '23:59:59'", Config),
-%     #{rows := [{#pgsql_time{hour = 0, minute = 0, second = 0, microsecond = 123000}}]}
-%         = execute("SELECT time '00:00:00.123'", Config),
-%     #{rows := [{#pgsql_time{hour = 0, minute = 0, second = 0, microsecond = 123456}}]}
-%         = execute("SELECT time '00:00:00.123456'", Config),
-%     #{rows := [{#pgsql_time{hour = 1, minute = 2, second = 3, microsecond = 123456}}]}
-%         = execute("SELECT time '01:02:03.123456'", Config),
-%     #{rows := [{#pgsql_time{hour = 2, minute = 5, second = 6, microsecond = 0}}]}
-%         = execute("SELECT timetz '04:05:06+02'", Config).
+decode_time(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    lists:foreach(fun ({SQLExpr, {Time, MicroSeconds}}) ->
+        Expect =
+            erlang:convert_time_unit(calendar:time_to_seconds(Time), second, native) +
+            erlang:convert_time_unit(MicroSeconds, microsecond, native),
+        {ok, _, [{Result}]} = execute(Connection, ["select " | SQLExpr]),
+        ?assertEqual(Expect, Result, "(" ++ SQLExpr ++ ") result mismatch")
+    end, [
+        {"'00:00:00'::time",             {{0, 0, 0}, 0}},
+        {"'01:02:03'::time",             {{1, 2, 3}, 0}},
+        {"'23:59:59'::time",             {{23, 59, 59}, 0}},
+        {"'00:00:00.123'::time",         {{0, 0, 0}, 123000}},
+        {"'00:00:00.123456'::time",      {{0, 0, 0}, 123456}},
+        {"'04:05:06+02'::timetz",        {{2, 5, 6}, 0}},
+        {"'04:05:06.123456+02'::timetz", {{2, 5, 6}, 123456}}
+    ]).
 
 % decode_date(Config) ->
 %     #{rows := [{#pgsql_date{year = 1, month = 1, day = 1}}]}
