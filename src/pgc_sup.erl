@@ -37,7 +37,7 @@ init([]) ->
 pgc_connections_sup() ->
     #{
         id => connections_sup,
-        start => {pgc_connections_sup, start_link, []},
+        start => {pgc_connections_sup, start_link, [pgc_connections_sup]},
         shutdown => infinity,
         type => supervisor
     }.

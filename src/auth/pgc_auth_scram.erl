@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_auth_scram).
 -export([
     init/3,

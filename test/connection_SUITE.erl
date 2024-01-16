@@ -61,8 +61,8 @@ end_per_testcase(_Case, Config) ->
 
 execute_simple(Config) ->
     Connection = proplists:get_value(connection, Config),
-    Statement = "select 123 as test",
-    {ok, #{rows := 1}, [#{test := 123}]} = pgc_connection:execute(Connection, Statement, []).
+    Statement = ["select 123 as ", <<"test">>],
+    {ok, #{rows := 1}, [#{test := 123}]} = pgc:execute(Connection, Statement).
 
 
 
@@ -74,7 +74,7 @@ execute_simple(Config) ->
 hibernate(Config) ->
     Connection = proplists:get_value(connection, Config),
     [{memory, M0}] = erlang:process_info(Connection, [memory]),
-    {ok, #{command := select}, _} = pgc_connection:execute(Connection, "select * from pg_user", []),
+    {ok, #{command := select}, _} = pgc:execute(Connection, <<"select * from pg_user">>),
     [{memory, M1}] = erlang:process_info(Connection, [memory]),
     timer:sleep(timer:seconds(1)),
     [{current_function, {erlang, hibernate, _}}] = erlang:process_info(Connection, [current_function]),
@@ -89,7 +89,7 @@ hibernate(Config) ->
 
 binref_leak(Config) ->
     Connection = proplists:get_value(connection, Config),
-    {ok, #{command := select}, Rows} = pgc_connection:execute(Connection, "select * from pg_user", []),
+    {ok, #{command := select}, Rows} = pgc:execute(Connection, <<"select * from pg_user">>),
     _ = erlang:garbage_collect(Connection),
     [{binary, []}] = erlang:process_info(Connection, [binary]),
     Rows.

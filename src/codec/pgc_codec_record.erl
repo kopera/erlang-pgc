@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_record).
 -behaviour(pgc_codec).
 -export([
@@ -6,7 +7,7 @@
     decode/4
 ]).
 
--include("../pgc_type.hrl").
+-include("../types/pgc_type.hrl").
 
 
 init(Options) ->

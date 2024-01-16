@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_float8).
 
 -behaviour(pgc_codec).

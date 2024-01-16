@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec).
 -export([
     format_error/2

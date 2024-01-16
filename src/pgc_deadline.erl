@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_deadline).
 -export([
     from_timeout/1,

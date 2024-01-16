@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_oid).
 
 -behaviour(pgc_codec).

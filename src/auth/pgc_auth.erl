@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_auth).
 -export([
     init/2,
@@ -7,7 +8,7 @@
     state/0
 ]).
 
--include("./pgc_message.hrl").
+-include("../protocol/pgc_message.hrl").
 
 -record(auth, {
     username :: unicode:unicode_binary(),

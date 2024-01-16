@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_enum).
 
 -behaviour(pgc_codec).
@@ -7,7 +8,7 @@
     decode/4
 ]).
 
--include("../pgc_type.hrl").
+-include("../types/pgc_type.hrl").
 
 
 init(Options) ->
