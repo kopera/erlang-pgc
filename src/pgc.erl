@@ -1,82 +1,53 @@
 -module(pgc).
 -export([
     connect/2,
-    disconnect/1,
+    connect/3,
+    disconnect/1
+]).
+-export([
     execute/2,
     execute/3
 ]).
 
 
--spec connect(TransportOptions, ConnectionOptions) -> {ok, Connection} | {error, Error} when
-    TransportOptions :: transport_options(),
-    ConnectionOptions :: connection_options(),
-    Connection :: connection(),
-    Error :: pgc_error:t().
--type transport_options() :: #{
-    address := transport_address(),
-    tls => disable | prefer | require,
-    tls_options => [ssl:tls_client_option()],
-    connect_timeout => timeout()
-}.
--type transport_address() :: {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}.
--type connection_options() :: #{
-    user := unicode:chardata(),
-    password => unicode:chardata() | fun(() -> unicode:chardata()),
-    database := unicode:chardata(),
-    parameters => #{
-        application_name => unicode:chardata(),
-        atom() => unicode:chardata()
-    },
-
-    hibernate_after => timeout()
-}.
--type connection() :: pid().
-connect(TransportOptions0, ConnectionOptions0) ->
-    {
-        TransportOptions,
-        ClientOptions,
-        DatabaseOptions
-    } = connect_options(TransportOptions0, ConnectionOptions0),
-    case pgc_transport:connect(TransportOptions) of
-        {ok, Transport} ->
-            case pgc_connections_sup:start_connection(pgc_connections_sup, self(), ClientOptions) of
-                {ok, ConnectionPid} ->
-                    ok = pgc_transport:set_owner(Transport, ConnectionPid),
-                    case pgc_connection:open(ConnectionPid, Transport, DatabaseOptions) of
-                        ok -> {ok, ConnectionPid};
-                        {error, _} = Error -> Error
-                    end;
-                {error, _} = Error ->
-                    _ = pgc_transport:close(Transport),
-                    Error
-            end;
-        {error, _} = Error ->
-            Error 
+connect(TransportOptions, ConnectionOptions, PoolOptions) ->
+    case pgc_pools_sup:start_pool(TransportOptions, ConnectionOptions, PoolOptions) of
+        {ok, _PoolSupervisorPid, PoolManagerPid} ->
+            {ok, {pool, PoolManagerPid}}
     end.
 
 
-%% @private
-connect_options(TransportOptions, Options) ->
-    ClientOptions = maps:with([hibernate_after], Options),
-    DefaultParameters = #{
-        application_name => atom_to_binary(node()),
-        'TimeZone' => <<"Etc/UTC">>
-    },
-    DatabaseOptions = maps:update_with(parameters, fun (P) ->
-        maps:merge(DefaultParameters, P)
-    end, DefaultParameters, maps:without([hibernate_after], Options)),
-    {TransportOptions, ClientOptions, DatabaseOptions}.
+-spec connect(TransportOptions, ConnectionOptions) -> {ok, Connection} | {error, Error} when
+    TransportOptions :: pgc_transport:options(),
+    ConnectionOptions :: pgc_connection:options(),
+    Connection :: connection(),
+    Error :: pgc_error:t().
+-type connection() :: pid().
+connect(TransportOptions, ConnectionOptions) ->
+    case pgc_connections_sup:start_connection(TransportOptions, ConnectionOptions) of
+        {ok, ConnectionPid} ->
+            receive
+                {pgc_connection, ConnectionPid, connected} ->
+                    {ok, ConnectionPid};
+                {pgc_connection, ConnectionPid, {error, _} = Error} ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
 
+disconnect({pool, PoolManagerPid}) ->
+    pgc_pool:stop(PoolManagerPid);
 disconnect(Connection) ->
-    pgc_connection:close(Connection).
+    pgc_connection:stop(Connection).
 
 
 -spec execute(Connection, Statement) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: connection(),
     Statement :: unicode:unicode_binary() | {unicode:unicode_binary(), Parameters},
     Parameters :: [term()],
-    Metadata :: execute_metadata(),
+    Metadata :: pgc_connection:execute_metadata(),
     Rows :: [term()],
     Error :: pgc_error:t().
 execute(Connection, Statement) ->
@@ -87,20 +58,23 @@ execute(Connection, Statement) ->
     Connection :: connection(),
     Statement :: unicode:unicode_binary() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
     Parameters :: [term()],
-    Options :: execute_options(),
-    Metadata :: execute_metadata(),
+    Options :: pgc_connection:execute_options(),
+    Metadata :: pgc_connection:execute_metadata(),
     Rows :: [term()],
     Error :: pgc_error:t().
--type execute_options() :: #{
-    cache => false | {true, atom()},
-    row => map | tuple | list | proplist
-}.
--type execute_metadata() :: #{
-    command := atom(),
-    columns := [atom()],
-    rows => non_neg_integer(),
-    notices := [map()]
-}.
+execute({pool, PoolManagerPid}, Statement, Options) ->
+    case pgc_pool_manager:checkout(PoolManagerPid, #{}) of
+        {ok, Connection} ->
+            try execute(Connection, Statement, Options) of
+                Result -> Result
+            after
+                pgc_pool_manager:checkin(PoolManagerPid, Connection)
+            end;
+        {error, timeout} ->
+            exit(pool_timeout);
+        {error, Error} ->
+            {error, Error}
+    end;
 execute(Connection, Statement, Options) when is_binary(Statement) ->
     pgc_connection:execute(Connection, Statement, [], Options);
 execute(Connection, {Statement, Parameters}, Options) ->

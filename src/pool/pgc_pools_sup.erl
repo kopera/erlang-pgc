@@ -1,7 +1,7 @@
 %% @private
--module(pgc_connections_sup).
+-module(pgc_pools_sup).
 -export([
-    start_connection/2
+    start_pool/3
 ]).
 
 -export([
@@ -15,12 +15,14 @@
 
 
 %% @private
--spec start_connection(TransportOptions, ConnectionOptions) -> {ok, pid()} when
+-spec start_pool(TransportOptions, ConnectionOptions, PoolOptions) -> {ok, pid(), pid()} when
     TransportOptions :: pgc_transport:options(),
-    ConnectionOptions :: pgc_connection:options().
-start_connection(TransportOptions, ConnectionOptions) ->
-    case supervisor:start_child(?MODULE, [TransportOptions, ConnectionOptions, self()]) of
-        {ok, Connection} when is_pid(Connection) -> {ok, Connection}
+    ConnectionOptions :: pgc_connection:options(),
+    PoolOptions :: pgc_pool:options().
+start_pool(TransportOptions, ConnectionOptions, PoolOptions) ->
+    case supervisor:start_child(?MODULE, [TransportOptions, ConnectionOptions, PoolOptions]) of
+        {ok, PoolPid, #{manager := ManagerPid}} when is_pid(ManagerPid) ->
+            {ok, PoolPid, ManagerPid}
     end.
 
 
@@ -44,8 +46,9 @@ init([]) ->
     Children = [
         #{
             id => connection,
-            start => {pgc_connection, start_link, []},
-            restart => temporary
+            start => {pgc_pool, start_link, []},
+            restart => temporary,
+            type => supervisor
         }
     ],
     {ok, {Flags, Children}}.

@@ -1,5 +1,6 @@
 -module(pgc_error).
 -export([
+    client_connection_failure/1,
     protocol_violation/1,
     feature_not_supported/1,
     invalid_parameter_value/3,
@@ -43,6 +44,12 @@
     line => non_neg_integer(),
     routine => unicode:unicode_binary()
 }.
+
+
+%% @private
+-spec client_connection_failure(unicode:chardata() | {io:format(), [term()]}) -> t().
+client_connection_failure(Message) ->
+    new(<<"08001">>, Message).
 
 %% @private
 -spec protocol_violation(unicode:chardata() | {io:format(), [term()]}) -> t().
