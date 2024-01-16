@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_bitstring).
 
 -behaviour(pgc_codec).

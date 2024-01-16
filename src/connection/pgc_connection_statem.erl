@@ -12,9 +12,8 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
--include("./pgc_message.hrl").
--include("./pgc_statement.hrl").
--include("./pgc_type.hrl").
+-include("../protocol/pgc_message.hrl").
+-include("../types/pgc_type.hrl").
 
 -define(internal_statement_name_prefix, "_pgc_connection_:").
 -define(refresh_types_statement_name, <<?internal_statement_name_prefix, "refresh_types">>).
@@ -48,6 +47,15 @@ from pg_catalog.pg_type
   left join pg_catalog.pg_range on pg_range.rngtypid = pg_type.oid
   left join pg_catalog.pg_namespace on pg_namespace.oid = pg_type.typnamespace"
 >>).
+
+-record(pgc_statement, {
+    name :: binary(),
+    % text :: unicode:unicode_binary(),
+    hash :: binary(),
+    parameters :: [pgc_type:oid()],
+    result :: [#pgc_row_field{}]
+}).
+
 
 % ------------------------------------------------------------------------------
 % Data records

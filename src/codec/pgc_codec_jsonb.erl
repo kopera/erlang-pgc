@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_jsonb).
 
 -behaviour(pgc_codec).

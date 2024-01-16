@@ -34,14 +34,14 @@
     address := connect_address(),
     tls => disable | prefer | require,
     tls_options => [ssl:tls_client_option()],
-    timeout => timeout()
+    connect_timeout => timeout()
 }.
 -type connect_address() :: {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}.
 -type connect_error() :: econnrefused | timeout | {tls, unavailable | any()}.
 connect(#{address := {tcp, Host, Port}} = Options) ->
     TLS = maps:get(tls, Options, prefer),
     TLSOptions = maps:get(tls_options, Options, []),
-    Timeout = maps:get(timeout, Options, 15_000),
+    Timeout = maps:get(connect_timeout, Options, 15_000),
     Deadline = pgc_deadline:from_timeout(Timeout),
     case gen_tcp:connect(Host, Port, [binary, {packet, raw}, {active, false}, {keepalive, true}], pgc_deadline:remaining(Deadline)) of
         {ok, Socket} when TLS =:= disable ->

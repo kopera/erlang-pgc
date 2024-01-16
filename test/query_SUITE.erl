@@ -196,4 +196,4 @@ decode_oid(Config) ->
 
 %% @private
 execute(Connection, Statement) ->
-    pgc_connection:execute(Connection, Statement, [], #{row => tuple}).
+    pgc:execute(Connection, {Statement, []}, #{row => tuple}).

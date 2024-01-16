@@ -1,6 +1,6 @@
+%% @private
 -module(pgc_connection).
 -export([
-    execute/3,
     execute/4
     % transaction/3,
     % reset/1
@@ -18,37 +18,14 @@
 ]).
 
 
--spec execute(Connection, Statement, Parameters) -> {ok, Metadata, Rows} | {error, Error} when
-    Connection :: pid(),
-    Statement :: unicode:chardata(),
-    Parameters :: [term()],
-    Metadata :: execute_metadata(),
-    Rows :: execute_rows(),
-    Error :: execute_error().
-execute(Connection, Statement, Parameters) ->
-    execute(Connection, Statement, Parameters, #{}).
-
-
 -spec execute(Connection, Statement, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pid(),
     Statement :: unicode:chardata(),
     Parameters :: [term()],
-    Options :: execute_options(),
-    Metadata :: execute_metadata(),
-    Rows :: execute_rows(),
-    Error :: execute_error().
--type execute_options() :: #{
-    cache => false | {true, atom()},
-    row => map | tuple | list | proplist
-}.
--type execute_metadata() :: #{
-    command := atom(),
-    columns := [atom()],
-    rows => non_neg_integer(),
-    notices := [map()]
-}.
--type execute_rows() :: [term()].
--type execute_error() :: map().
+    Options :: pgc:execute_options(),
+    Metadata :: pgc:execute_metadata(),
+    Rows :: [term()],
+    Error :: pgc_error:t().
 execute(Connection, StatementText, Parameters, Options) ->
     StatementName = case Options of
         #{cache := {true, Key}} -> atom_to_binary(Key, utf8);

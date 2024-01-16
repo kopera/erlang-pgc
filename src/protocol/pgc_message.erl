@@ -13,7 +13,7 @@
     notice_fields/0
 ]).
 
--include("./pgc_message.hrl").
+-include("./protocol/pgc_message.hrl").
 -define(PROTOCOL_VERSION_MAJOR, 3).
 -define(PROTOCOL_VERSION_MINOR, 0).
 

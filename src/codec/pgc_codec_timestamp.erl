@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codec_timestamp).
 
 -behaviour(pgc_codec).

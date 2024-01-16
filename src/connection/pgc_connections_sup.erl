@@ -1,12 +1,12 @@
 %% @private
 -module(pgc_connections_sup).
 -export([
-    start_connection/2,
-    stop_connection/1
+    start_connection/3
 ]).
 
 -export([
-    start_link/0
+    start_link/0,
+    start_link/1
 ]).
 
 -behaviour(supervisor).
@@ -16,26 +16,27 @@
 
 
 %% @private
--spec start_connection(pid(), Options) -> {ok, pid()} when
+-spec start_connection(Supervisor, Owner, Options) -> {ok, pid()} when
+    Supervisor :: atom() | pid(),
+    Owner :: pid(),
     Options :: #{
         hibernate_after => timeout()
     }.
-start_connection(Owner, Options) ->
-    case supervisor:start_child(?MODULE, [Owner, Options]) of
+start_connection(Supervisor, Owner, Options) ->
+    case supervisor:start_child(Supervisor, [Owner, Options]) of
         {ok, Connection} when is_pid(Connection) -> {ok, Connection}
     end.
 
 
 %% @private
--spec stop_connection(pid()) -> ok.
-stop_connection(Connection) ->
-    ok = supervisor:terminate_child(?MODULE, Connection).
-
-
-%% @private
 -spec start_link() -> {ok, pid()}.
 start_link() ->
-    {ok, _} = supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+    {ok, _} = supervisor:start_link(?MODULE, []).
+
+%% @private
+-spec start_link(atom()) -> {ok, pid()}.
+start_link(Name) ->
+    {ok, _} = supervisor:start_link({local, Name}, ?MODULE, []).
 
 
 %%====================================================================

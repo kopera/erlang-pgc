@@ -1,3 +1,4 @@
+%% @private
 -module(pgc_codecs).
 -export([
     new/1,
@@ -9,7 +10,7 @@
     t/0
 ]).
 
--include("../pgc_type.hrl").
+-include("../types/pgc_type.hrl").
 
 
 -record(codecs, {
