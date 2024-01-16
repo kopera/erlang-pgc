@@ -12,25 +12,24 @@
 ]).
 -export_type([
     t/0,
-    connect_options/0,
-    send_error/0,
+    options/0,
     tags/0
 ]).
 
 -record(tcp_transport, {
     socket :: gen_tcp:socket(),
-    connect_options :: connect_options()
+    options :: options()
 }).
 
 -record(tls_transport, {
     socket :: ssl:sslsocket(),
-    connect_options :: connect_options()
+    options :: options()
 }).
 
 -opaque t() :: #tcp_transport{} | #tls_transport{}.
 
--spec connect(connect_options()) -> {ok, t()} | {error, connect_error()}.
--type connect_options() :: #{
+-spec connect(options()) -> {ok, t()} | {error, connect_error()}.
+-type options() :: #{
     address := connect_address(),
     tls => disable | prefer | require,
     tls_options => [ssl:tls_client_option()],
@@ -47,7 +46,7 @@ connect(#{address := {tcp, Host, Port}} = Options) ->
         {ok, Socket} when TLS =:= disable ->
             {ok, #tcp_transport{
                 socket = Socket,
-                connect_options = Options#{
+                options = Options#{
                     address := peer_address(Socket)
                 }
             }};
@@ -59,7 +58,7 @@ connect(#{address := {tcp, Host, Port}} = Options) ->
                         {ok, TLSSocket} ->
                             {ok, #tls_transport{
                                 socket = TLSSocket,
-                                connect_options = Options#{
+                                options = Options#{
                                     address := peer_address(Socket)
                                 }
                             }};
@@ -76,7 +75,7 @@ connect(#{address := {tcp, Host, Port}} = Options) ->
                 {ok, <<$N>>} when TLS =:= prefer ->
                     {ok, #tcp_transport{
                         socket = Socket,
-                        connect_options = Options#{
+                        options = Options#{
                             address := peer_address(Socket)
                         }
                     }};
@@ -94,9 +93,9 @@ connect(#{address := {tcp, Host, Port}} = Options) ->
     end.
 
 -spec dup(t()) -> {ok, t()} | {error, connect_error()}.
-dup(#tcp_transport{connect_options = ConnectOptions}) ->
+dup(#tcp_transport{options = ConnectOptions}) ->
     connect(ConnectOptions);
-dup(#tls_transport{connect_options = ConnectOptions}) ->
+dup(#tls_transport{options = ConnectOptions}) ->
     connect(ConnectOptions).
 
 

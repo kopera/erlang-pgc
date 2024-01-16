@@ -28,16 +28,14 @@ start_link() ->
 init([]) ->
     Flags = #{strategy => one_for_one},
     {ok, {Flags, [
-        pgc_connections_sup()
+        #{
+            id => connections_sup,
+            start => {pgc_connections_sup, start_link, []},
+            type => supervisor
+        },
+        #{
+            id => pools_sup,
+            start => {pgc_pools_sup, start_link, []},
+            type => supervisor
+        }
     ]}}.
-
-
-%% @private
--spec pgc_connections_sup() -> supervisor:child_spec().
-pgc_connections_sup() ->
-    #{
-        id => connections_sup,
-        start => {pgc_connections_sup, start_link, [pgc_connections_sup]},
-        shutdown => infinity,
-        type => supervisor
-    }.
