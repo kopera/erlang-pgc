@@ -205,8 +205,8 @@ handle_cast(EventContent, #state{} = State) ->
 
 
 %% @private
-handle_info({{'DOWN', owner}, OwnerMonitor, process, OwnerPid, _}, #state{owner = {OwnerPid, OwnerMonitor}}) ->
-    {stop, normal};
+handle_info({{'DOWN', owner}, OwnerMonitor, process, OwnerPid, _}, #state{owner = {OwnerPid, OwnerMonitor}} = State) ->
+    {stop, normal, State};
 
 handle_info({{'DOWN', user}, UserMonitor, process, UserPid, _}, #state{} = State) ->
     case lists:keyfind(UserMonitor, #connection.user_monitor, State#state.used) of
