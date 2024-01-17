@@ -1,6 +1,7 @@
 -module(pgc_connection).
 -export([
-    execute/4
+    execute/2,
+    execute/3
     % transaction/3,
     % reset/1
 ]).
@@ -33,13 +34,20 @@
 -include("./pgc_connection.hrl").
 
 
-% ------------------------------------------------------------------------------
-% Public API
-% ------------------------------------------------------------------------------
-
--spec execute(Connection, Statement, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
+-spec execute(Connection, Statement) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pid(),
-    Statement :: unicode:chardata(),
+    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
+    Parameters :: [term()],
+    Metadata :: execute_metadata(),
+    Rows :: [term()],
+    Error :: pgc_error:t().
+execute(ConnectionPid, Statement) ->
+    execute(ConnectionPid, Statement, #{}).
+
+
+-spec execute(Connection, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
+    Connection :: pid(),
+    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
     Parameters :: [term()],
     Options :: execute_options(),
     Metadata :: execute_metadata(),
@@ -55,6 +63,29 @@
     rows => non_neg_integer(),
     notices := [map()]
 }.
+execute(ConnectionPid, Statement, Options) when is_binary(Statement) ->
+    execute(ConnectionPid, Statement, [], Options);
+execute(ConnectionPid, {Statement, Parameters}, Options) ->
+    execute(ConnectionPid, Statement, Parameters, Options);
+execute(ConnectionPid, StatementTemplate, Options) when is_list(StatementTemplate) ->
+    {Statement, Parameters} = pgc_statement:from_template(StatementTemplate),
+    execute(ConnectionPid, Statement, Parameters, Options).
+
+
+% ------------------------------------------------------------------------------
+% Internal API
+% ------------------------------------------------------------------------------
+
+%% @private
+-spec execute(Connection, Statement, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
+    Connection :: pid(),
+    Statement :: unicode:chardata(),
+    Parameters :: [term()],
+    Options :: execute_options(),
+    Metadata :: execute_metadata(),
+    Rows :: [term()],
+    Error :: pgc_error:t().
+
 execute(Connection, StatementText, Parameters, Options) ->
     StatementName = case Options of
         #{cache := {true, Key}} -> atom_to_binary(Key, utf8);
@@ -156,14 +187,16 @@ decode_tag(Tag) ->
             #{command => binary_to_atom(string:lowercase(Command))}
     end.
 
+
 % ------------------------------------------------------------------------------
 % Private/Internal API
 % ------------------------------------------------------------------------------
 
 %% @private
--spec start_link(TransportOptions, Options, pid()) -> {ok, pid()} when
+-spec start_link(TransportOptions, ConnectionOptions, OwnerPid) -> {ok, pid()} when
     TransportOptions :: pgc_transport:options(),
-    Options :: options().
+    ConnectionOptions :: options(),
+    OwnerPid :: pid().
 -type options() :: #{
     user := unicode:chardata(),
     password => unicode:chardata() | fun(() -> unicode:chardata()),
@@ -176,7 +209,7 @@ decode_tag(Tag) ->
     atom() => unicode:chardata()
 }.
 start_link(TransportOptions, ConnectionOptions, OwnerPid) ->
-    {ok, _Pid} = gen_statem:start_link(?MODULE, {OwnerPid, TransportOptions, ConnectionOptions}, [
+    gen_statem:start_link(?MODULE, {OwnerPid, TransportOptions, ConnectionOptions}, [
         {hibernate_after, maps:get(hibernate_after, ConnectionOptions, 5000)}
     ]).
 
@@ -280,9 +313,11 @@ stop(Connection) ->
 % gen_statem callbacks
 % ------------------------------------------------------------------------------
 
-%% @hidden
+%% @private
 init({OwnerPid, TransportOptions, ConnectionOptions}) ->
-    OwnerMonitor = erlang:monitor(process, OwnerPid),
+    OwnerMonitor = erlang:monitor(process, OwnerPid, [
+        {tag, {'DOWN', owner}}
+    ]),
     erlang:put(owner_pid, OwnerPid),
     erlang:put(owner_monitor, OwnerMonitor),
     {ok, #disconnected{}, undefined, [
@@ -290,12 +325,12 @@ init({OwnerPid, TransportOptions, ConnectionOptions}) ->
     ]}.
 
 
-%% @hidden
+%% @private
 callback_mode() ->
     [handle_event_function, state_enter].
 
 
-%% @hidden
+%% @private
 
 % State: disconnected ----------------------------------------------------------
 
@@ -477,7 +512,9 @@ handle_event({call, From}, {execute, ClientPid, ExecutionRef, #pgc_statement{} =
                 {ok, StatementParameters} ->
                     {next_state, #executing{
                         client_pid = ClientPid,
-                        client_monitor = erlang:monitor(process, ClientPid),
+                        client_monitor = erlang:monitor(process, ClientPid, [
+                            {tag, {'DOWN', client}}
+                        ]),
                         execution_ref = ExecutionRef,
                         statement_name = StatementName,
                         statement_parameters = StatementParameters,
@@ -655,7 +692,7 @@ handle_event(cast, {cancel, ClientMonitor}, #executing{} = Executing, #connectio
     ok = send_cancel_request(Transport, BackendKey),
     {next_state, #syncing{}, ConnectionData};
 
-handle_event(info, {'DOWN', ClientMonitor, process, _ClientPid, _Reason}, #executing{client_monitor = ClientMonitor}, #connection{} = ConnectionData) ->
+handle_event(info, {{'DOWN', client}, ClientMonitor, process, _ClientPid, _Reason}, #executing{client_monitor = ClientMonitor}, #connection{} = ConnectionData) ->
     #connection{transport = Transport, key = BackendKey} = ConnectionData,
     ok = send_cancel_request(Transport, BackendKey),
     {next_state, #syncing{}, ConnectionData};
@@ -767,7 +804,7 @@ handle_event(info, {ClosedTag, Source}, _, #connection{transport_tags = {Source,
         {next_event, internal, {pgc_transport, closed}}
     ]};
 
-handle_event(info = EventType, {'DOWN', OwnerMonitor, process, OwnerPid, _Reason} = EventContent, State, _ConnectionData) ->
+handle_event(info = EventType, {{'DOWN', owner}, OwnerMonitor, process, OwnerPid, _Reason} = EventContent, State, _ConnectionData) ->
     case {erlang:get(owner_pid), erlang:get(owner_monitor)} of
         {OwnerPid, OwnerMonitor} ->
             {stop, normal};
@@ -791,7 +828,7 @@ handle_event(EventType, EventContent, State, _Data) ->
     keep_state_and_data.
 
 
-%% @hidden
+%% @private
 terminate(_Reason, _State, undefined) ->
     ok;
 
@@ -799,7 +836,7 @@ terminate(_Reason, _State, #connection{transport = Transport}) ->
     pgc_transport:close(Transport).
 
 
-%% @hidden
+%% @private
 format_status(Status) ->
     maps:map(fun
         (data, #connection{} = Connection) ->
@@ -822,9 +859,9 @@ notify_owner(Message) ->
     end.
 
 
--spec send(pgc_transport:t(), [Message] | Message) -> ok | {error, send_error()} when
-    Message :: pgc_message:message_f() | pgc_message:message_fb().
--type send_error() :: pgc_transport:send_error().
+-spec send(pgc_transport:t(), [Message] | Message) -> ok | {error, Error} when
+    Message :: pgc_message:message_f() | pgc_message:message_fb(),
+    Error :: pgc_transport:send_error().
 send(Transport, Messages) when is_list(Messages) ->
     ?LOG_DEBUG(#{
         label => {?MODULE, send},
@@ -835,9 +872,10 @@ send(Transport, Message) ->
     send(Transport, [Message]).
 
 
--spec send_cancel_request(Transport, BackendKey) -> ok | {error, send_error()} when
+-spec send_cancel_request(Transport, BackendKey) -> ok | {error, Error} when
     Transport :: pgc_transport:t(),
-    BackendKey :: {non_neg_integer(), non_neg_integer()}.
+    BackendKey :: {non_neg_integer(), non_neg_integer()},
+    Error :: pgc_transport:send_error().
 send_cancel_request(Transport, {Id, Secret}) ->
     case pgc_transport:dup(Transport) of
         {ok, T} ->

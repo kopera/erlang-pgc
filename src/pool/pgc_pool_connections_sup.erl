@@ -36,7 +36,7 @@ start_link(TransportOptions, ConnectionOptions) ->
 %%====================================================================
 
 
-%% @hidden
+%% @private
 -spec init({TransportOptions, ConnectionOptions}) -> {ok, {Flags, [ChildSpec]}} when
     TransportOptions :: pgc_transport:options(),
     ConnectionOptions :: pgc_connection:options(),

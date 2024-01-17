@@ -114,6 +114,7 @@ characters_to_binary(Input) ->
     end.
 
 
+%% @private
 -spec from_message(#msg_error_response{}) -> t().
 from_message(#msg_error_response{fields = Fields}) ->
     #{code := Code} = Fields,
