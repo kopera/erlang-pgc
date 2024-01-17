@@ -1,12 +1,13 @@
 %% @private
 -module(pgc_pool_manager).
 -export([
+    info/1,
     checkout/2,
     checkin/2
 ]).
 
 -export([
-    start_link/2,
+    start_link/3,
     stop/1
 ]).
 
@@ -23,7 +24,11 @@
     %terminate/2
 ]).
 
+-include_lib("kernel/include/logger.hrl").
+
+
 -record(state, {
+    owner :: {pid(), reference()} | undefined,
     supervisor :: pid(),
     connections_supervisor :: pid(),
 
@@ -54,44 +59,60 @@
 -type checkout_req() :: #checkout_req{}.
 
 
--spec checkout(PoolRef, Options) -> {ok, Connection} | {error, timeout} when
-    PoolRef :: atom() | pid(),
+
+-spec info(PoolManagerRef) -> Info when
+    PoolManagerRef :: atom() | pid(),
+    Info :: #{
+        starting := non_neg_integer(),
+        available := non_neg_integer(),
+        used := non_neg_integer(),
+        size := non_neg_integer(),
+        limit := pos_integer()
+    }.
+info(PoolManagerRef) ->
+    gen_server:call(PoolManagerRef, info).
+
+
+-spec checkout(PoolManagerRef, Options) -> {ok, Connection} | {error, timeout} when
+    PoolManagerRef :: atom() | pid(),
     Options :: #{
-        timeout => timeout()
+        timeout => timeout() | {abs, timeout()}
     },
     Connection :: pid().
-checkout(PoolRef, Options) ->
-    CheckoutRef = make_ref(),
+checkout(PoolManagerRef, Options) ->
     Timeout = maps:get(timeout, Options, 5000),
-    try gen_server:call(PoolRef, {checkout, self(), CheckoutRef}, Timeout) of
-        {ok, _Connection} = Result ->
-            Result
+    ReqId = gen_server:send_request(PoolManagerRef, checkout),
+    try gen_server:receive_response(ReqId, Timeout) of
+        {reply, {ok, _Connection} = Result} ->
+            Result;
+        {error, _} ->
+            exit(noproc)
     catch
         exit:{timeout, {gen_server, call, _}} ->
-            gen_server:cast(PoolRef, {checkout_cancel, self(), CheckoutRef}),
+            gen_server:cast(PoolManagerRef, {checkout_cancel, {self(), ReqId}}),
             {error, timeout};
         Class:Reason:Stacktrace ->
-            gen_server:cast(PoolRef, {checkout_cancel, self(), CheckoutRef}),
+            gen_server:cast(PoolManagerRef, {checkout_cancel, {self(), ReqId}}),
             erlang:raise(Class, Reason, Stacktrace)
     end.
 
 
--spec checkin(PoolRef, Connection) -> ok when
-    PoolRef :: atom() | pid(),
+-spec checkin(PoolManagerRef, Connection) -> ok when
+    PoolManagerRef :: atom() | pid(),
     Connection :: pid().
-checkin(PoolRef, ConnectionPid) when is_pid(ConnectionPid) ->
-    gen_server:cast(PoolRef, {checkin, ConnectionPid}).
+checkin(PoolManagerRef, ConnectionPid) when is_pid(ConnectionPid) ->
+    gen_server:cast(PoolManagerRef, {checkin, ConnectionPid}).
 
 
--spec start_link(PoolSupervisor, PoolOptions) -> {ok, pid()} | {error, term()} when
+-spec start_link(PoolOwner, PoolSupervisor, PoolOptions) -> {ok, pid()} | {error, term()} when
+    PoolOwner :: pid() | undefined,
     PoolSupervisor :: pid(),
     PoolOptions :: pgc_pool:options().
-start_link(PoolSupervisor, PoolOptions) ->
+start_link(PoolOwner, PoolSupervisor, PoolOptions) ->
+    Args = {PoolOwner, PoolSupervisor, PoolOptions},
     case PoolOptions of
-        #{name := PoolName} ->
-            gen_server:start_link({local, PoolName}, ?MODULE, {PoolSupervisor, PoolOptions}, []);
-        #{} ->
-            gen_server:start_link(?MODULE, {PoolSupervisor, PoolOptions}, [])
+        #{name := PoolName} -> gen_server:start_link({local, PoolName}, ?MODULE, Args, []);
+        #{} -> gen_server:start_link(?MODULE, Args, [])
     end.
 
 
@@ -103,27 +124,45 @@ stop(PoolRef) ->
 % gen_server callbacks
 % ------------------------------------------------------------------------------
 
-%% @hidden
+%% @private
 init(Args) ->
     {ok, undefined, {continue, Args}}.
 
 
-%% @hidden
-handle_continue({PoolSupervisor, PoolOptions}, undefined) ->
+%% @private
+handle_continue({OwnerPid, SupervisorPid, Options}, undefined) ->
     {noreply, #state{
-        supervisor = PoolSupervisor,
-        connections_supervisor = connections_supervisor(PoolSupervisor),
+        owner = if
+            OwnerPid =:= undefined ->
+                undefined;
+            is_pid(OwnerPid) ->
+                OwnerMonitor = erlang:monitor(process, OwnerPid, [
+                    {tag, {'DOWN', owner}}
+                ]),
+                {OwnerPid, OwnerMonitor}
+        end,
+        supervisor = SupervisorPid,
+        connections_supervisor = connections_supervisor(SupervisorPid),
         starting = [],
         available = [],
         used = [],
         waiting = queue:new(),
         size = 0,
-        limit = maps:get(limit, PoolOptions, 1)
+        limit = maps:get(limit, Options, 1)
     }}.
 
 
-%% @hidden
-handle_call({checkout, UserPid, CheckoutRef}, From, #state{} = State) ->
+%% @private
+handle_call(info, _From, #state{} = State) ->
+    Info = #{
+        starting => length(State#state.starting),
+        available => length(State#state.available),
+        used => length(State#state.used),
+        size => State#state.size,
+        limit => State#state.limit
+    },
+    {reply, Info, State};
+handle_call(checkout, {UserPid, CheckoutRef} = From, #state{} = State) ->
     CheckoutReq = #checkout_req{
         user_pid = UserPid,
         user_reference = CheckoutRef,
@@ -137,11 +176,11 @@ handle_call(Request, _From, #state{} = State) ->
     {reply, {bad_request, Request}, State}.
 
 
-%% @hidden
+%% @private
 handle_cast({checkin, ConnectionPid}, #state{} = State) when is_pid(ConnectionPid) ->
     {noreply, process_checkin(ConnectionPid, State)};
 
-handle_cast({checkout_cancel, UserPid, CheckoutRef}, #state{} = State) ->
+handle_cast({checkout_cancel, {UserPid, CheckoutRef}}, #state{} = State) ->
     %% we need to handle the case where the cancel is processed after we have marked the connection as used
     case lists:keyfind(CheckoutRef, #connection.user_reference, State#state.used) of
         #connection{pid = ConnectionPid, user_pid = UserPid} ->
@@ -156,11 +195,19 @@ handle_cast({checkout_cancel, UserPid, CheckoutRef}, #state{} = State) ->
             }}
     end;
 
-handle_cast(_Notification, #state{} = State) ->
+handle_cast(EventContent, #state{} = State) ->
+    ?LOG_WARNING(#{
+        label => {?MODULE, unhandled_event},
+        event_type => cast,
+        event_content => EventContent
+    }),
     {noreply, State}.
 
 
-%% @hidden
+%% @private
+handle_info({{'DOWN', owner}, OwnerMonitor, process, OwnerPid, _}, #state{owner = {OwnerPid, OwnerMonitor}}) ->
+    {stop, normal};
+
 handle_info({{'DOWN', user}, UserMonitor, process, UserPid, _}, #state{} = State) ->
     case lists:keyfind(UserMonitor, #connection.user_monitor, State#state.used) of
         #connection{pid = ConnectionPid, user_pid = UserPid} ->
@@ -213,7 +260,12 @@ handle_info({pgc_connection, ConnectionPid, {error, _} = Error}, #state{} = Stat
             {noreply, State}
     end;
 
-handle_info(_Info, #state{} = State) ->
+handle_info(EventContent, #state{} = State) ->
+    ?LOG_WARNING(#{
+        label => {?MODULE, unhandled_event},
+        event_type => info,
+        event_content => EventContent
+    }),
     {noreply, State}.
 
 
@@ -270,6 +322,7 @@ process_waiting(#state{size = Size, limit = Limit} = State) when Size =:= Limit 
 % ------------------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------------------
+
 
 -spec connections_supervisor(pid()) -> pid().
 connections_supervisor(PoolSupervisor) ->

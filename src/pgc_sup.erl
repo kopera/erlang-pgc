@@ -21,7 +21,7 @@ start_link() ->
 %%====================================================================
 
 
-%% @hidden
+%% @private
 -spec init([]) -> {ok, {Flags, [ChildSpec]}} when
     Flags :: supervisor:sup_flags(),
     ChildSpec :: supervisor:child_spec().
