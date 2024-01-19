@@ -75,7 +75,7 @@ simple_test(Config) ->
     ?assertMatch(#{starting := 0, available := 0, used := 0, size := 0, limit := 1}, pgc_pool:info(PoolRef)),
     pgc_pool:with_connection(PoolRef, fun (ConnectionPid) ->
         ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
-        Result = pgc_connection:execute(ConnectionPid, {"select 'hello Erlang' as message", []}),
+        Result = pgc_connection:execute(ConnectionPid, "select 'hello Erlang' as message", [], #{}),
         ?assertMatch({ok, #{}, [#{message := <<"hello Erlang">>}]}, Result)
     end),
     ?assertMatch(#{starting := 0, available := 1, used := 0, size := 1, limit := 1}, pgc_pool:info(PoolRef)).
@@ -93,19 +93,19 @@ waiting_test(Config) ->
         Parent ! pgc_pool:with_connection(PoolRef, fun (ConnectionPid) ->
             Parent ! {self(), got_connection},
             ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
-            Result = pgc_connection:execute(ConnectionPid, {"select 'hello from User1' as message", []}),
+            Result = pgc_connection:execute(ConnectionPid, "select 'hello from User1' as message", [], #{}),
             {ok, #{}, [#{message := Message}]} = Result,
             ?wait(continue, 1000),
             {self(), Message}
         end)
     end),
     User2 = spawn_link(fun () ->
-        ?wait(start, 100),
+        ?wait(start, 500),
         Parent ! {self(), waiting_for_connection},
         Parent ! pgc_pool:with_connection(PoolRef, fun (ConnectionPid) ->
             Parent ! {self(), got_connection},
             ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
-            Result = pgc_connection:execute(ConnectionPid, {"select 'hello from User2' as message", []}),
+            Result = pgc_connection:execute(ConnectionPid, "select 'hello from User2' as message", [], #{}),
             {ok, #{}, [#{message := Message}]} = Result,
             ?wait(continue, 1000),
             {self(), Message}
@@ -118,7 +118,7 @@ waiting_test(Config) ->
     receive {User2, User2Message1} -> ct:log("User2: ~p", [User2Message1]) end,
     receive
         {User2, got_connection} -> ct:fail("Should not be reached")
-    after 500 ->
+    after 200 ->
         ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
         ?assertEqual({status, waiting}, erlang:process_info(User2, status))
     end,

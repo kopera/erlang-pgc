@@ -1,8 +1,7 @@
 {application, pgc, [
     {description, "PostgreSQL client library"},
     {vsn, git},
-    {registered, [pgc_sup]},
-    {mod, {pgc_app, []}},
+    {registered, []},
     {applications, [
         kernel,
         stdlib,
