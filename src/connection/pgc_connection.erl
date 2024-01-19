@@ -1,17 +1,13 @@
+%% @private
 -module(pgc_connection).
 -export([
-    execute/2,
-    execute/3
+    execute/4
     % transaction/3,
     % reset/1
 ]).
 -export_type([
     options/0,
     parameters/0
-]).
--export_type([
-    execute_options/0,
-    execute_metadata/0
 ]).
 
 -export([
@@ -34,55 +30,13 @@
 -include("./pgc_connection.hrl").
 
 
--spec execute(Connection, Statement) -> {ok, Metadata, Rows} | {error, Error} when
-    Connection :: pid(),
-    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
-    Parameters :: [term()],
-    Metadata :: execute_metadata(),
-    Rows :: [term()],
-    Error :: pgc_error:t().
-execute(ConnectionPid, Statement) ->
-    execute(ConnectionPid, Statement, #{}).
-
-
--spec execute(Connection, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
-    Connection :: pid(),
-    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
-    Parameters :: [term()],
-    Options :: execute_options(),
-    Metadata :: execute_metadata(),
-    Rows :: [term()],
-    Error :: pgc_error:t().
--type execute_options() :: #{
-    cache => false | {true, atom()},
-    row => map | tuple | list | proplist
-}.
--type execute_metadata() :: #{
-    command := atom(),
-    columns := [atom()],
-    rows => non_neg_integer(),
-    notices := [map()]
-}.
-execute(ConnectionPid, Statement, Options) when is_binary(Statement) ->
-    execute(ConnectionPid, Statement, [], Options);
-execute(ConnectionPid, {Statement, Parameters}, Options) ->
-    execute(ConnectionPid, Statement, Parameters, Options);
-execute(ConnectionPid, StatementTemplate, Options) when is_list(StatementTemplate) ->
-    {Statement, Parameters} = pgc_statement:from_template(StatementTemplate),
-    execute(ConnectionPid, Statement, Parameters, Options).
-
-
-% ------------------------------------------------------------------------------
-% Internal API
-% ------------------------------------------------------------------------------
-
 %% @private
 -spec execute(Connection, Statement, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pid(),
     Statement :: unicode:chardata(),
     Parameters :: [term()],
-    Options :: execute_options(),
-    Metadata :: execute_metadata(),
+    Options :: pgc:execute_options(),
+    Metadata :: pgc:execute_metadata(),
     Rows :: [term()],
     Error :: pgc_error:t().
 

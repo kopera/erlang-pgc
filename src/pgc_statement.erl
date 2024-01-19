@@ -1,6 +1,7 @@
+%% @private
 -module(pgc_statement).
 -export([
-    from_template/1
+    new/1
 ]).
 -export_type([
     t/0,
@@ -17,11 +18,20 @@
 -type ref(Value) :: #{key => term(), value := Value}.
 
 
+-spec new(Input) -> t() when
+    Input :: unicode:unicode_binary() | {unicode:chardata(), [term()]} | template().
+new(Statement) when is_binary(Statement) ->
+    {Statement, []};
+new({Statement, Parameters}) ->
+    {Statement, Parameters};
+new(StatementTemplate) when is_list(StatementTemplate) ->
+    from_template(StatementTemplate).
+
+
 %% @private
 -spec from_template(template()) -> t().
 from_template(Tokens) when is_list(Tokens) ->
     from_template(Tokens, [], [], #{}).
-
 
 
 %% @private

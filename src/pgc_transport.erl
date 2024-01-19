@@ -12,30 +12,22 @@
 ]).
 -export_type([
     t/0,
-    options/0,
     tags/0
 ]).
 
 -record(tcp_transport, {
     socket :: gen_tcp:socket(),
-    options :: options()
+    options :: pgc:transport_options()
 }).
 
 -record(tls_transport, {
     socket :: ssl:sslsocket(),
-    options :: options()
+    options :: pgc:transport_options()
 }).
 
 -opaque t() :: #tcp_transport{} | #tls_transport{}.
 
--spec connect(options()) -> {ok, t()} | {error, connect_error()}.
--type options() :: #{
-    address := connect_address(),
-    tls => disable | prefer | require,
-    tls_options => [ssl:tls_client_option()],
-    connect_timeout => timeout()
-}.
--type connect_address() :: {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}.
+-spec connect(pgc:transport_options()) -> {ok, t()} | {error, connect_error()}.
 -type connect_error() :: econnrefused | timeout | {tls, unavailable | any()}.
 connect(#{address := {tcp, Host, Port}} = Options) ->
     TLS = maps:get(tls, Options, prefer),
@@ -159,7 +151,7 @@ get_tags(#tls_transport{socket = Socket}) ->
 
 
 %% @private
--spec peer_address(gen_tcp:socket()) -> connect_address().
+-spec peer_address(gen_tcp:socket()) -> pgc:transport_address().
 peer_address(Socket) ->
     case inet:peername(Socket) of
         {ok, {Address, Port}}

@@ -1,53 +1,84 @@
 -module(pgc).
 -export([
-    start_pool/3,
-    stop_pool/1
+    start_link/3
 ]).
 -export([
-    start_connection/2,
-    stop_connection/1
-]).
--export_type([
-    pool_ref/0
+    execute/2,
+    execute/3
+    % transaction/2
 ]).
 
 
--spec start_pool(TransportOptions, ConnectionOptions, PoolOptions) -> {ok, Pool} | {error, Error} when
-    TransportOptions :: pgc_transport:options(),
-    ConnectionOptions :: pgc_connection:options(),
-    PoolOptions :: pgc_pool:options(),
-    Pool :: pid(),
+%% @doc Start a new PostgreSQL client.
+%% 
+%% This function is meant to be used as part of a {@link supervisor:child_spec()}.
+-spec start_link(TransportOptions, ClientOptions, PoolOptions) -> {ok, pid()} when
+    TransportOptions :: transport_options(),
+    ClientOptions :: client_options(),
+    PoolOptions :: pool_options().
+-type transport_options() :: #{
+    address := transport_address(),
+    tls => disable | prefer | require,
+    tls_options => [ssl:tls_client_option()],
+    connect_timeout => timeout()
+}.
+-type transport_address() :: {tcp, inet:ip_address() | inet:hostname(), inet:port_number()}.
+-type client_options() :: #{
+    user := unicode:chardata(),
+    password => unicode:chardata() | fun(() -> unicode:chardata()),
+    database := unicode:chardata(),
+    parameters => #{
+        application_name => unicode:chardata(),
+        atom() => unicode:chardata()
+    },
+    hibernate_after => timeout()
+}.
+-type pool_options() :: #{
+    name => atom(),
+    limit => pos_integer()
+}.
+start_link(TransportOptions, ClientOptions, PoolOptions) ->
+    pgc_pool:start_link(TransportOptions, ClientOptions, PoolOptions).
+
+
+
+%% @doc Prepare and execute a SQL statement.
+%% @equiv execute(Client, Statement, #{})
+-spec execute(Client, Statement) -> {ok, Metadata, Rows} | {error, Error} when
+    Client :: pid(),
+    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
+    Parameters :: [term()],
+    Metadata :: execute_metadata(),
+    Rows :: [term()],
     Error :: pgc_error:t().
-start_pool(TransportOptions, ConnectionOptions, PoolOptions) ->
-    pgc_pools_sup:start_pool(self(), TransportOptions, ConnectionOptions, PoolOptions).
+execute(Client, Statement) ->
+    execute(Client, Statement, #{}).
 
 
--spec stop_pool(pool_ref()) -> ok.
--type pool_ref() :: pid() | atom().
-stop_pool(PoolRef) ->
-    pgc_pools_sup:stop_pool(PoolRef).
-
-
--spec start_connection(TransportOptions, ConnectionOptions) -> {ok, Connection} | {error, Error} when
-    TransportOptions :: pgc_transport:options(),
-    ConnectionOptions :: pgc_connection:options(),
-    Connection :: pid(),
+%% @doc Prepare and execute a SQL statement.
+-spec execute(Client, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
+    Client :: pid(),
+    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
+    Parameters :: [term()],
+    Options :: execute_options(),
+    Metadata :: execute_metadata(),
+    Rows :: [term()],
     Error :: pgc_error:t().
-start_connection(TransportOptions, ConnectionOptions) ->
-    case pgc_connections_sup:start_connection(self(), TransportOptions, ConnectionOptions) of
-        {ok, ConnectionPid} ->
-            receive
-                {pgc_connection, ConnectionPid, connected} ->
-                    {ok, ConnectionPid};
-                {pgc_connection, ConnectionPid, {error, _} = Error} ->
-                    Error
-            end;
-        {error, _} = Error ->
-            Error
-    end.
-
-
--spec stop_connection(connection_ref()) -> ok.
--type connection_ref() :: pid().
-stop_connection(ConnectionPid) ->
-    pgc_connections_sup:stop_connection(ConnectionPid).
+-type execute_options() :: #{
+    cache => false | {true, atom()},
+    row => map | tuple | list | proplist
+}.
+-type execute_metadata() :: #{
+    command := atom(),
+    columns := [atom()],
+    rows => non_neg_integer(),
+    notices := [map()]
+}.
+execute(Client, Statement, _Options) when is_pid(Client); is_atom(Client) ->
+    % TODO: split Options into Checkout and Execute Options.
+    CheckoutOptions = #{},
+    ExecuteOptions = #{},
+    {StatementText, StatementParameters} = pgc_statement:new(Statement),
+    pgc_pool:with_connection(Client, fun (ConnectionPid) ->
+        pgc_connection:execute(ConnectionPid, StatementText, StatementParameters, ExecuteOptions)
+    end, CheckoutOptions).

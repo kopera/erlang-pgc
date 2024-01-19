@@ -17,7 +17,10 @@
     select_array_test/1,
     select_time_test/1,
     select_record_test/1,
-    select_oid_test/1
+    select_oid_test/1,
+    select_void_test/1,
+    select_xid8_test/1,
+    select_empty_test/1
 ]).
 -export([
     hibernate_test/1,
@@ -56,7 +59,7 @@ init_per_testcase(_Case, Config) ->
         user => ct:get_config(user),
         password => ct:get_config(password),
         database => ct:get_config(database),
-        hibernate_after => 500
+        hibernate_after => 200
     },
     {ok, Connection} = pgc_connection:start_link(TransportOptions, ConnectionOptions, self()),
     [{connection, Connection} | Config].
@@ -84,7 +87,10 @@ groups() ->
             select_array_test,
             select_time_test,
             select_record_test,
-            select_oid_test
+            select_oid_test,
+            select_void_test,
+            select_xid8_test,
+            select_empty_test
         ]}
     ].
 
@@ -182,6 +188,24 @@ select_oid_test(Config) ->
     ]).
 
 
+select_void_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertMatch({ok, #{command := select, rows := 1}, [#{pg_sleep := undefined}]},
+        execute(Connection, <<"select pg_sleep(0.1)">>)).
+
+
+select_xid8_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertMatch({ok, #{command := select, rows := 1}, [#{pg_current_xact_id := XID}]} when is_integer(XID),
+        execute(Connection, <<"select pg_current_xact_id()">>)).
+
+
+select_empty_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertMatch({ok, #{command := select, rows := 0, columns := [usename]}, []},
+        execute(Connection, <<"select usename from pg_user where false">>)).
+
+
 % timeout(Config) ->
 %     {error, timeout} = execute("select pg_sleep(0.1)", [], #{timeout => 50}, Config),
 %     #{rows := [{void}]} = execute("select pg_sleep(0.1)", [], #{timeout => 200}, Config).
@@ -192,7 +216,7 @@ hibernate_test(Config) ->
     [{memory, M0}] = erlang:process_info(Connection, [memory]),
     {ok, #{command := select}, _} = execute(Connection, <<"select * from pg_user">>),
     [{memory, M1}] = erlang:process_info(Connection, [memory]),
-    timer:sleep(timer:seconds(1)),
+    timer:sleep(500),
     [{current_function, {erlang, hibernate, _}}] = erlang:process_info(Connection, [current_function]),
     [{memory, M2}] = erlang:process_info(Connection, [memory]),
     ct:log([
@@ -216,7 +240,7 @@ binref_leak_test(Config) ->
 % ------------------------------------------------------------------------------
 
 execute(Connection, Statement) ->
-    pgc_connection:execute(Connection, {Statement, []}).
+    pgc_connection:execute(Connection, Statement, [], #{}).
 
 
 select_test(Config, Cases) ->
@@ -224,7 +248,7 @@ select_test(Config, Cases) ->
     lists:foreach(fun({SQLExpr, Expect}) ->
         Statement = ["select " | SQLExpr],
         ct:log("Executing statement: ~s", [Statement]),
-        {ok, _, [Result]} = pgc_connection:execute(Connection, {Statement, []}, #{row => tuple}),
+        {ok, _, [Result]} = pgc_connection:execute(Connection, Statement, [], #{row => tuple}),
         case is_function(Expect, 2) of
             true -> Expect(Result, "(" ++ SQLExpr ++ ") result mismatch");
             false -> ?assertEqual(Expect, Result, "(" ++ SQLExpr ++ ") result mismatch")

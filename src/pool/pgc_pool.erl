@@ -1,3 +1,4 @@
+%% @private
 %% @doc PostgreSQL client connection pool.
 -module(pgc_pool).
 -export([
@@ -138,6 +139,7 @@ start_link(TransportOptions, ConnectionOptions, Options) ->
     {ok, _} = supervisor:start_link(?MODULE, {undefined, TransportOptions, ConnectionOptions, Options}).
 
 
+%% @private
 -spec start_link(OwnerPid, TransportOptions, ConnectionOptions, PoolOptions) -> {ok, pid()} when
     OwnerPid :: pid(),
     TransportOptions :: pgc_transport:options(),
