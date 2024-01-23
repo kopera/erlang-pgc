@@ -3,8 +3,8 @@
 -module(pgc_pool).
 -export([
     info/1,
-    with_connection/2,
-    with_connection/3
+    with_client/2,
+    with_client/3
 ]).
 -export_type([
     options/0
@@ -55,12 +55,12 @@ info(PoolRef) ->
     pgc_pool_manager:info(PoolManagerRef).
 
 
-%% @equiv with_connection(Pool, Action, #{})
--spec with_connection(PoolRef, Action) -> Result when
+%% @equiv with_client(Pool, Action, #{})
+-spec with_client(PoolRef, Action) -> Result when
     PoolRef :: pid() | atom(),
     Action :: fun((Connection :: pid()) -> Result).
-with_connection(Pool, Action) ->
-    with_connection(Pool, Action, #{}).
+with_client(Pool, Action) ->
+    with_client(Pool, Action, #{}).
 
 
 %% @doc Checkout a connection from the pool, then call the `Action' function
@@ -75,11 +75,11 @@ with_connection(Pool, Action) ->
 %%  <dd>connection checkout timeout (default: `5000ms')</dd>
 %% </dl>
 %% 
--spec with_connection(PoolRef, Action, Options) -> Result when
+-spec with_client(PoolRef, Action, Options) -> Result when
     PoolRef :: pid() | atom(),
     Action :: fun((Connection :: pid()) -> Result),
     Options :: checkout_options().
-with_connection(Pool, Action, Options) ->
+with_client(Pool, Action, Options) ->
     case checkout(Pool, Options) of
         {ok, ConnectionPid} ->
             try Action(ConnectionPid) of
@@ -108,7 +108,7 @@ with_connection(Pool, Action, Options) ->
     Options :: checkout_options(),
     Connection :: pid().
 -type checkout_options() :: #{
-    timeout => timeout() | {abs, timeout()}
+    timeout => timeout() | {abs, integer()}
 }.
 checkout(PoolRef, Options) ->
     PoolManagerRef = pool_manager_ref(PoolRef),
@@ -127,26 +127,26 @@ checkin(PoolRef, ConnectionPid) ->
 %% @doc Start a new PostgreSQL client pool.
 %% 
 %% This function is meant to be used as part of a {@link supervisor:child_spec()}.
--spec start_link(TransportOptions, ConnectionOptions, PoolOptions) -> {ok, pid()} when
-    TransportOptions :: pgc_transport:options(),
-    ConnectionOptions :: pgc_connection:options(),
+-spec start_link(TransportOptions, ClientOptions, PoolOptions) -> {ok, pid()} when
+    TransportOptions :: pgc:transport_options(),
+    ClientOptions :: pgc:client_options(),
     PoolOptions :: options().
 -type options() :: #{
     name => atom(),
     limit => pos_integer()
 }.
-start_link(TransportOptions, ConnectionOptions, Options) ->
-    {ok, _} = supervisor:start_link(?MODULE, {undefined, TransportOptions, ConnectionOptions, Options}).
+start_link(TransportOptions, ClientOptions, Options) ->
+    {ok, _} = supervisor:start_link(?MODULE, {undefined, TransportOptions, ClientOptions, Options}).
 
 
 %% @private
--spec start_link(OwnerPid, TransportOptions, ConnectionOptions, PoolOptions) -> {ok, pid()} when
+-spec start_link(OwnerPid, TransportOptions, ClientOptions, PoolOptions) -> {ok, pid()} when
     OwnerPid :: pid(),
-    TransportOptions :: pgc_transport:options(),
-    ConnectionOptions :: pgc_connection:options(),
+    TransportOptions :: pgc:transport_options(),
+    ClientOptions :: pgc:client_options(),
     PoolOptions :: options().
-start_link(OwnerPid, TransportOptions, ConnectionOptions, Options) ->
-    {ok, _} = supervisor:start_link(?MODULE, {OwnerPid, TransportOptions, ConnectionOptions, Options}).
+start_link(OwnerPid, TransportOptions, ClientOptions, Options) ->
+    {ok, _} = supervisor:start_link(?MODULE, {OwnerPid, TransportOptions, ClientOptions, Options}).
 
 
 %% @private
@@ -182,20 +182,20 @@ format_error(_Reason, [{_M, _F, _As, Info}|_]) ->
 %%====================================================================
 
 %% @private
--spec init({OwnerPid, TransportOptions, ConnectionOptions, Options}) -> {ok, {Flags, [ChildSpec]}} when
+-spec init({OwnerPid, TransportOptions, ClientOptions, Options}) -> {ok, {Flags, [ChildSpec]}} when
     OwnerPid :: pid() | undefined,
-    TransportOptions :: pgc_transport:options(),
-    ConnectionOptions :: pgc_connection:options(),
+    TransportOptions :: pgc:transport_options(),
+    ClientOptions :: pgc:client_options(),
     Options :: options(),
     Flags :: supervisor:sup_flags(),
     ChildSpec :: supervisor:child_spec().
-init({OwnerPid, TransportOptions, ConnectionOptions, Options}) ->
+init({OwnerPid, TransportOptions, ClientOptions, Options}) ->
     SupervisorPid = self(),
     Flags = #{strategy => one_for_all, auto_shutdown => any_significant},
     {ok, {Flags, [
         #{
             id => connections_sup,
-            start => {pgc_pool_connections_sup, start_link, [TransportOptions, ConnectionOptions]},
+            start => {pgc_pool_connections_sup, start_link, [TransportOptions, ClientOptions]},
             type => supervisor
         },
         #{

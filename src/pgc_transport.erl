@@ -6,13 +6,15 @@
     send/2,
     recv/2,
     close/1,
+    shutdown/2,
     set_active/2,
     set_owner/2,
     get_tags/1
 ]).
 -export_type([
     t/0,
-    tags/0
+    tags/0,
+    send_error/0
 ]).
 
 -record(tcp_transport, {
@@ -34,7 +36,13 @@ connect(#{address := {tcp, Host, Port}} = Options) ->
     TLSOptions = maps:get(tls_options, Options, []),
     Timeout = maps:get(connect_timeout, Options, 15_000),
     Deadline = pgc_deadline:from_timeout(Timeout),
-    case gen_tcp:connect(Host, Port, [binary, {packet, raw}, {active, false}, {keepalive, true}], pgc_deadline:remaining(Deadline)) of
+    ConnectOptions = [
+        binary,
+        {packet, raw},
+        {active, false},
+        {keepalive, true}
+    ],
+    case gen_tcp:connect(Host, Port, ConnectOptions, pgc_deadline:to_timeout(Deadline)) of
         {ok, Socket} when TLS =:= disable ->
             {ok, #tcp_transport{
                 socket = Socket,
@@ -44,9 +52,9 @@ connect(#{address := {tcp, Host, Port}} = Options) ->
             }};
         {ok, Socket} ->
             ok = gen_tcp:send(Socket, <<8:32/integer, 1234:16/integer, 5679:16/integer>>),
-            case gen_tcp:recv(Socket, 1, pgc_deadline:remaining(Deadline)) of
+            case gen_tcp:recv(Socket, 1, pgc_deadline:to_timeout(Deadline)) of
                 {ok, <<$S>>} ->
-                    case ssl:connect(Socket, TLSOptions, pgc_deadline:remaining(Deadline)) of
+                    case ssl:connect(Socket, TLSOptions, pgc_deadline:to_timeout(Deadline)) of
                         {ok, TLSSocket} ->
                             {ok, #tls_transport{
                                 socket = TLSSocket,
@@ -119,6 +127,13 @@ close(#tls_transport{socket = Socket}) ->
     _ = ssl:close(Socket),
     ok.
 
+
+-spec shutdown(t(), read | write | read_write) -> ok.
+shutdown(#tcp_transport{socket = Socket}, How) ->
+    ok = gen_tcp:shutdown(Socket, How);
+shutdown(#tls_transport{socket = Socket}, How) ->
+    _ = ssl:shutdown(Socket, How),
+    ok.
 
 -spec set_active(t(), boolean() | once | -32768..32767) -> ok | {error, any()}.
 set_active(#tcp_transport{socket =  Socket}, Active) ->

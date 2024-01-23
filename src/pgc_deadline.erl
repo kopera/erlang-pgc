@@ -2,45 +2,70 @@
 -module(pgc_deadline).
 -export([
     from_timeout/1,
-    remaining/1
+    to_timeout/1,
+    to_abs_timeout/1
+]).
+-export([
+    start_timer/3,
+    cancel_timer/1
 ]).
 -export_type([
-    t/0
+    t/0,
+    timer/1
 ]).
 
--record(deadline, {
-    value :: pos_integer() | infinity
-}).
--opaque t() :: #deadline{}.
-
+-type t() :: integer() | infinity.
 
 
 %% @doc create a new deadline for a given timeout.
--spec from_timeout(timeout()) -> t().
-from_timeout(Timeout) ->
-    from_timeout(Timeout, millisecond).
-
-%% @private
-from_timeout(infinity, _Unit) ->
-    #deadline{value = infinity};
-
-from_timeout(Timeout, Unit) ->
-    Delta = erlang:convert_time_unit(Timeout, Unit, native),
-    #deadline{value = erlang:monotonic_time() + Delta}.
-
-
-%% @doc return the remaining milliseconds to deadline or infinity.
--spec remaining(t()) -> non_neg_integer() | infinity.
-remaining(Timeout) ->
-    remaining(Timeout, millisecond).
-
-%% @private
-remaining(#deadline{value = infinity}, _Unit) ->
+-spec from_timeout(timeout() | {abs, integer()}) -> t().
+from_timeout({abs, Deadline}) when is_integer(Deadline) ->
+    Deadline;
+from_timeout(infinity) ->
     infinity;
-remaining(#deadline{value = Value}, Unit) when is_integer(Value) ->
-    case Value - erlang:monotonic_time() of
+from_timeout(Timeout) when is_integer(Timeout), Timeout >= 0 ->
+    Delta = erlang:convert_time_unit(Timeout, millisecond, native),
+    erlang:monotonic_time() + Delta.
+
+
+-spec to_timeout(t()) -> infinity | non_neg_integer() | infinity.
+to_timeout(infinity) ->
+    infinity;
+to_timeout(Deadline) ->
+    case Deadline - erlang:monotonic_time() of
         Remaining when Remaining > 0 ->
-            erlang:convert_time_unit(Remaining, native, Unit);
+            erlang:convert_time_unit(Remaining, native, millisecond);
         _ -> 0
     end.
 
+
+-spec to_abs_timeout(t()) -> infinity | {abs, integer()}.
+to_abs_timeout(infinity) ->
+    infinity;
+to_abs_timeout(Deadline) ->
+    Milliseconds = erlang:convert_time_unit(Deadline, native, millisecond),
+    {abs, Milliseconds}.
+
+
+-spec start_timer(Dest :: pid(), Message, Deadline :: t()) -> timer(Message).
+-opaque timer(Message) :: infinity | {reference(), Message}.
+start_timer(_Dest, _Message, infinity) ->
+    infinity;
+start_timer(Dest, Message, Deadline) ->
+    Milliseconds = erlang:convert_time_unit(Deadline, native, millisecond),
+    {erlang:send_after(Milliseconds, Dest, Message, [{abs, true}]), Message}.
+
+
+-spec cancel_timer(timer(term())) -> ok.
+cancel_timer(infinity) ->
+    ok;
+cancel_timer({TimerRef, Message}) ->
+    case erlang:cancel_timer(TimerRef) of
+        false ->
+            receive
+                Message -> ok
+            after 0 -> ok
+            end;
+        _ ->
+            ok
+    end.

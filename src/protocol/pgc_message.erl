@@ -139,8 +139,8 @@ encode(#msg_parse{name = Name, statement = Query, types = Types}) ->
     ]};
 encode(#msg_password{password = Password}) ->
     {$p, [Password, 0]};
-encode(#msg_query{query = Query}) ->
-    {$Q, [Query, 0]};
+encode(#msg_query{text = Text}) ->
+    {$Q, [Text, 0]};
 encode(#msg_sasl_initial_response{mechanism = Mechanism, data = Data}) ->
     Payload = if
         Data == undefined ->

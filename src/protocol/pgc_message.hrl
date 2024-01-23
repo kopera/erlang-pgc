@@ -120,7 +120,7 @@
 -record(msg_portal_suspended, {
 }).
 -record(msg_query, {
-    query = "" :: iodata()
+    text = "" :: iodata()
 }).
 -record(msg_ready_for_query, {
     status = idle :: idle | transaction | error

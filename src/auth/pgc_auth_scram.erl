@@ -60,7 +60,7 @@ continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
                 {binding, ?gs2_header},
                 {nonce, ServerNonce}
             ]),
-            Password = unicode:characters_to_binary(PasswordFun()),
+            Password = pgc_string:to_binary(PasswordFun()),
             SaltedPassword = hi(HashingAlgorithm, Password, Salt, Iterations),
             ClientKey = crypto:mac(hmac, HashingAlgorithm, SaltedPassword, <<"Client Key">>),
             StoredKey = crypto:hash(HashingAlgorithm, ClientKey),
@@ -132,8 +132,9 @@ encode_attribute(error, Error) -> [<<"e=">>, encode_error(Error)].
 
 
 %% @private
+-spec decode_username(binary()) -> binary().
 decode_username(Data) ->
-    case decode_username(unicode:characters_to_binary(Data), <<>>) of
+    case decode_username(Data, <<>>) of
         error -> erlang:error(invalid_username_encoding, [Data]);
         {ok, Username} -> Username
     end.
@@ -154,8 +155,9 @@ decode_username(<<>>, Acc) ->
 
 
 %% @private
+-spec encode_username(unicode:chardata()) -> binary().
 encode_username(Username) ->
-    encode_username(unicode:characters_to_binary(Username), <<>>).
+    encode_username(pgc_string:to_binary(Username), <<>>).
 
 %% @private
 encode_username(<<$,, Rest/binary>>, Acc) ->
@@ -207,6 +209,7 @@ encode_error(other_error)-> <<"other-error">>.
 % Crypto
 % ------------------------------------------------------------------------------
 
+-spec hi(sha256, binary(), binary(), pos_integer()) -> binary().
 hi(HashingAlgorithm, Password, Salt, Iterations) ->
     #{size := KeyLen} = crypto:hash_info(HashingAlgorithm),
     crypto:pbkdf2_hmac(HashingAlgorithm, Password, Salt, Iterations, KeyLen).
