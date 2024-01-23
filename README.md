@@ -6,23 +6,19 @@ PostgreSQL client for Erlang.
 ## Examples
 
 ```erl
-1> {ok, Pool} = pgc_pool:start_link(#{address => {tcp, "localhost", 5432}}, #{
+1> {ok, Client} = pgc:start_link(#{address => {tcp, "localhost", 5432}}, #{
   user => "postgres",
   password => "postgres",
   database => "postgres"
 }, #{limit => 1}).
 {ok, <0.234.0>}
-2> pgc_pool:with_connection(Pool, fun (Connection) ->
-  pgc_connection:execute(Connection, {"select 'hello ' || $1 as message", ["world"]})
-end).
+2> pgc:execute(Client, {"select 'hello ' || $1 as message", ["world"]}).
 {ok, #{command => select, columns => [message], rows => 1, notices => []}, [
   #{message => <<"hello world">>}
 ]}
-3> pgc_pool:with_connection(Pool, fun (Connection) ->
-  pgc_connection:execute(Connection, {"select row('hello', $1::text) as record", ["world"]})
-end).
+3> pgc:execute(Client, {"select row('hello', $1::text) as record", ["world"]}).
 {ok,#{command => select, columns => [record], rows => 1, notices => []}, [
-    #{record => #{1 => <<"hello">>,2 => <<"world">>}}
+    #{record => #{1 => <<"hello">>, 2 => <<"world">>}}
 ]}
 ```
 
@@ -32,7 +28,7 @@ You need to add `pgc` as a dependency to your project. If you are using `rebar3`
 
 ```erlang
 {deps, [
-    {pgc, "0.1.0"}
+    {pgc, {git, "git://github.com/kopera/erlang-pgc.git", {branch, "main"}}},
 ]}.
 ```
 
@@ -53,7 +49,13 @@ updating your `.app.src` file:
 
 ## Usage
 
+TODO
 
 ## Features
 
+TODO
+
+
 ## Data representation
+
+TODO
