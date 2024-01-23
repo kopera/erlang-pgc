@@ -43,8 +43,7 @@ init_per_testcase(_Case, Config) ->
     ConnectionOptions = #{
         user => ct:get_config(user),
         password => ct:get_config(password),
-        database => ct:get_config(database),
-        hibernate_after => 500
+        database => ct:get_config(database)
     },
     PoolOptions = #{
         limit => 1
@@ -73,9 +72,9 @@ all() ->
 simple_test(Config) ->
     PoolRef = proplists:get_value(pool, Config),
     ?assertMatch(#{starting := 0, available := 0, used := 0, size := 0, limit := 1}, pgc_pool:info(PoolRef)),
-    pgc_pool:with_connection(PoolRef, fun (ConnectionPid) ->
+    pgc_pool:with_client(PoolRef, fun (ClientRef) ->
         ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
-        Result = pgc_connection:execute(ConnectionPid, "select 'hello Erlang' as message", [], #{}),
+        Result = pgc_client:execute(ClientRef, "select 'hello Erlang' as message", [], #{}),
         ?assertMatch({ok, #{}, [#{message := <<"hello Erlang">>}]}, Result)
     end),
     ?assertMatch(#{starting := 0, available := 1, used := 0, size := 1, limit := 1}, pgc_pool:info(PoolRef)).
@@ -90,10 +89,10 @@ waiting_test(Config) ->
     User1 = spawn_link(fun () ->
         ?wait(start, 100),
         Parent ! {self(), waiting_for_connection},
-        Parent ! pgc_pool:with_connection(PoolRef, fun (ConnectionPid) ->
+        Parent ! pgc_pool:with_client(PoolRef, fun (ClientRef) ->
             Parent ! {self(), got_connection},
             ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
-            Result = pgc_connection:execute(ConnectionPid, "select 'hello from User1' as message", [], #{}),
+            Result = pgc_client:execute(ClientRef, "select 'hello from User1' as message", [], #{}),
             {ok, #{}, [#{message := Message}]} = Result,
             ?wait(continue, 1000),
             {self(), Message}
@@ -102,10 +101,10 @@ waiting_test(Config) ->
     User2 = spawn_link(fun () ->
         ?wait(start, 500),
         Parent ! {self(), waiting_for_connection},
-        Parent ! pgc_pool:with_connection(PoolRef, fun (ConnectionPid) ->
+        Parent ! pgc_pool:with_client(PoolRef, fun (ClientRef) ->
             Parent ! {self(), got_connection},
             ?assertMatch(#{starting := 0, available := 0, used := 1, size := 1, limit := 1}, pgc_pool:info(PoolRef)),
-            Result = pgc_connection:execute(ConnectionPid, "select 'hello from User2' as message", [], #{}),
+            Result = pgc_client:execute(ClientRef, "select 'hello from User2' as message", [], #{}),
             {ok, #{}, [#{message := Message}]} = Result,
             ?wait(continue, 1000),
             {self(), Message}

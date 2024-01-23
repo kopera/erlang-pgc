@@ -14,11 +14,10 @@
 
 
 -record(codecs, {
-    encoders :: #{atom() => {module(), State :: term(), Format :: format()}},
-    decoders :: #{atom() => {module(), State :: term(), Format :: format()}}
+    encoders :: #{atom() => {module(), State :: term()}},
+    decoders :: #{atom() => {module(), State :: term()}}
 }).
 -opaque t() :: #codecs{}.
--type format() :: text | binary.
 
 
 -spec new(options()) -> t().

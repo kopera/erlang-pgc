@@ -76,21 +76,21 @@ info(PoolManagerRef) ->
 -spec checkout(PoolManagerRef, Options) -> {ok, Connection} | {error, timeout} when
     PoolManagerRef :: atom() | pid(),
     Options :: #{
-        timeout => timeout() | {abs, timeout()}
+        timeout => timeout() | {abs, number()}
     },
     Connection :: pid().
 checkout(PoolManagerRef, Options) ->
-    Timeout = maps:get(timeout, Options, 5000),
+    Timeout = maps:get(timeout, Options, infinity),
     ReqId = gen_server:send_request(PoolManagerRef, checkout),
     try gen_server:receive_response(ReqId, Timeout) of
-        {reply, {ok, _Connection} = Result} ->
+        {reply, {ok, Connection} = Result} when is_pid(Connection) ->
             Result;
         {error, _} ->
-            exit(noproc)
-    catch
-        exit:{timeout, {gen_server, call, _}} ->
+            exit(noproc);
+        timeout ->
             gen_server:cast(PoolManagerRef, {checkout_cancel, {self(), ReqId}}),
-            {error, timeout};
+            {error, timeout}
+    catch
         Class:Reason:Stacktrace ->
             gen_server:cast(PoolManagerRef, {checkout_cancel, {self(), ReqId}}),
             erlang:raise(Class, Reason, Stacktrace)
@@ -104,15 +104,17 @@ checkin(PoolManagerRef, ConnectionPid) when is_pid(ConnectionPid) ->
     gen_server:cast(PoolManagerRef, {checkin, ConnectionPid}).
 
 
--spec start_link(PoolOwner, PoolSupervisor, PoolOptions) -> {ok, pid()} | {error, term()} when
+-spec start_link(PoolOwner, PoolSupervisor, PoolOptions) -> {ok, pid()}  when
     PoolOwner :: pid() | undefined,
     PoolSupervisor :: pid(),
     PoolOptions :: pgc_pool:options().
 start_link(PoolOwner, PoolSupervisor, PoolOptions) ->
     Args = {PoolOwner, PoolSupervisor, PoolOptions},
-    case PoolOptions of
-        #{name := PoolName} -> gen_server:start_link({local, PoolName}, ?MODULE, Args, []);
-        #{} -> gen_server:start_link(?MODULE, Args, [])
+    {ok, _} = case PoolOptions of
+        #{name := PoolName} ->
+            gen_server:start_link({local, PoolName}, ?MODULE, Args, []);
+        #{} ->
+            gen_server:start_link(?MODULE, Args, [])
     end.
 
 
@@ -191,6 +193,7 @@ handle_cast({checkout_cancel, {UserPid, CheckoutRef}}, #state{} = State) ->
                     andalso UserPid =:= CheckoutReq#checkout_req.user_pid
             end, State#state.waiting),
             {noreply, State#state{
+                % eqwalizer:ignore
                 waiting = StillWaiting
             }}
     end;
@@ -327,7 +330,7 @@ process_waiting(#state{size = Size, limit = Limit} = State) when Size =:= Limit 
 -spec connections_supervisor(pid()) -> pid().
 connections_supervisor(PoolSupervisor) ->
     Children = supervisor:which_children(PoolSupervisor),
-    [ConnectionSup] = [Pid || {connections_sup, Pid, _, _} <- Children],
+    [ConnectionSup] = [Pid || {connections_sup, Pid, _, _} <- Children, is_pid(Pid)],
     ConnectionSup.
 
 
@@ -342,7 +345,7 @@ connection_start(ConnectionsSup) ->
     }.
 
 
--spec connection_checkout(pid(), term(), connection()) -> connection().
+-spec connection_checkout(pid(), reference(), connection()) -> connection().
 connection_checkout(UserPid, CheckoutRef, #connection{user_pid = undefined, user_monitor = undefined} = Connection) ->
     Connection#connection{
         user_pid = UserPid,
@@ -356,7 +359,7 @@ connection_checkout(UserPid, CheckoutRef, #connection{user_pid = undefined, user
 
 -spec connection_checkin(connection()) -> connection().
 connection_checkin(#connection{user_pid = UserPid, user_monitor = UserMonitor} = Connection) when is_pid(UserPid), is_reference(UserMonitor) ->
-    % pgc_connection:reset(ConnectionPid),
+    pgc_connection:reset(Connection#connection.pid),
     _ = erlang:demonitor(UserMonitor, [flush]),
     Connection#connection{
         user_pid = undefined,

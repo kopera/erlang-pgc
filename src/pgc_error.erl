@@ -1,13 +1,14 @@
 -module(pgc_error).
 -export([
     client_connection_failure/1,
+    disconnected/0,
+    disconnected/1,
     protocol_violation/1,
     feature_not_supported/1,
     invalid_parameter_value/3,
     authentication_failure/1,
     invalid_sql_statement_name/1,
-    disconnected/0,
-    disconnected/1
+    statement_timeout/0
 ]).
 -export([
     from_message/1
@@ -52,6 +53,16 @@ client_connection_failure(Message) ->
     new(<<"08001">>, Message).
 
 %% @private
+-spec disconnected() -> t().
+disconnected() ->
+    new(<<"08006">>, <<"server connection closed">>).
+
+%% @private
+-spec disconnected(unicode:chardata() | {io:format(), [term()]}) -> t().
+disconnected(Message) ->
+    new(<<"08006">>, Message).
+
+%% @private
 -spec protocol_violation(unicode:chardata() | {io:format(), [term()]}) -> t().
 protocol_violation(Message) ->
     new(<<"08P01">>, Message).
@@ -64,12 +75,12 @@ feature_not_supported(Message) ->
 %% @private
 -spec invalid_parameter_value(pos_integer(), term(), pgc_type:t()) -> t().
 invalid_parameter_value(Index, Value, #pgc_type{name = TypeName}) ->
-    new(<<"22023">>, {"Invalid parameter of type '~s' value '~p' at index ~b", [TypeName, Value, Index]}).
+    new(<<"22023">>, {"invalid parameter of type '~s' value '~p' at index ~b", [TypeName, Value, Index]}).
 
 %% @private
 -spec invalid_sql_statement_name(unicode:chardata()) -> t().
 invalid_sql_statement_name(Name) ->
-    new(<<"26000">>, {"Reserved SQL statememt name: ~s", [Name]}).
+    new(<<"26000">>, {"reserved SQL statememt name: ~s", [Name]}).
 
 %% @private
 -spec authentication_failure(unicode:chardata() | {io:format(), [term()]}) -> t().
@@ -77,15 +88,9 @@ authentication_failure(Message) ->
     new(<<"28P01">>, Message).
 
 %% @private
--spec disconnected() -> t().
-disconnected() ->
-    new(<<"28P01">>, <<"Server connection closed">>).
-
-%% @private
--spec disconnected(unicode:chardata() | {io:format(), [term()]}) -> t().
-disconnected(Message) ->
-    new(<<"28P01">>, Message).
-
+-spec statement_timeout() -> t().
+statement_timeout() ->
+    new(<<"57014">>, <<"canceling statement due to timeout">>).
 
 %% @private
 -spec new(binary(), unicode:chardata() | {io:format(), [term()]}) -> t().
@@ -98,20 +103,8 @@ new(Code, Message) ->
         class => class_from_code(Code),
         code => Code,
         name => name_from_code(Code),
-        message => characters_to_binary(Message)
+        message => pgc_string:to_binary(Message)
     }.
-
-
-%% @private
-characters_to_binary(Input) ->
-    case unicode:characters_to_binary(Input) of
-        {error, _, _} ->
-            erlang:error(badarg, [Input]);
-        {incomplete, _, _} ->
-            erlang:error(badarg, [Input]);
-        UnicodeBinary ->
-            UnicodeBinary
-    end.
 
 
 %% @private

@@ -23,6 +23,12 @@
     select_empty_test/1
 ]).
 -export([
+    transaction_commit_test/1,
+    transaction_rollback_test/1,
+    transaction_error_test/1
+]).
+-export([
+    execute_timeout_test/1,
     hibernate_test/1,
     binref_leak_test/1
 ]).
@@ -59,7 +65,7 @@ init_per_testcase(_Case, Config) ->
         user => ct:get_config(user),
         password => ct:get_config(password),
         database => ct:get_config(database),
-        hibernate_after => 200
+        ping_interval => 500
     },
     {ok, Connection} = pgc_connection:start_link(TransportOptions, ConnectionOptions, self()),
     [{connection, Connection} | Config].
@@ -74,6 +80,8 @@ end_per_testcase(_Case, Config) ->
 all() ->
     [
         {group, select},
+        {group, transaction},
+        execute_timeout_test,
         hibernate_test,
         binref_leak_test
     ].
@@ -91,6 +99,11 @@ groups() ->
             select_void_test,
             select_xid8_test,
             select_empty_test
+        ]},
+        {transaction, [], [
+            transaction_commit_test,
+            transaction_rollback_test,
+            transaction_error_test
         ]}
     ].
 
@@ -106,13 +119,36 @@ select_basic_test(Config) ->
         {"'e'::char",                       {<<"e">>}},
         {"'å'::char",                       {<<"å"/utf8>>}},
         {"'åja'",                           {<<"åja"/utf8>>}},
-        {"'åja'",                           {<<"åja"/utf8>>}},
         {"42",                              {42}},
-        {"42::float",                       {42.0}},
-        {"'NaN'::float",                    {'NaN'}},
-        {"'inf'::float",                    {'infinity'}},
-        {"'-inf'::float",                   {'-infinity'}},
-        {"'\\001\\002\\003'::bytea",        {<<1, 2, 3>>}}
+        {"42::float4",                      {42.0}},
+        {"42::float8",                      {42.0}},
+        {"'NaN'::float4",                   {'NaN'}},
+        {"'NaN'::float8",                   {'NaN'}},
+        {"'inf'::float4",                   {'infinity'}},
+        {"'inf'::float8",                   {'infinity'}},
+        {"'-inf'::float4",                  {'-infinity'}},
+        {"'-inf'::float8",                  {'-infinity'}},
+        {"'\\001\\002\\003'::bytea",        {<<1, 2, 3>>}},
+
+        {{"$1::integer", [null]},           {null}},
+        {{"$1::boolean", [true]},           {true}},
+        {{"$1::boolean", [false]},          {false}},
+        {{"$1::char",    [<<"e">>]},        {<<"e">>}},
+        {{"$1::char",    [<<"å"/utf8>>]},   {<<"å"/utf8>>}},
+        {{"$1::varchar", [<<"åja"/utf8>>]}, {<<"åja"/utf8>>}},
+        {{"$1::text",    [<<"åja"/utf8>>]}, {<<"åja"/utf8>>}},
+        {{"$1::integer", [42]},             {42}},
+        {{"$1::float4",  [42]},             {42.0}},
+        {{"$1::float8",  [42]},             {42.0}},
+        {{"$1::float4",  [42.0]},           {42.0}},
+        {{"$1::float8",  [42.0]},           {42.0}},
+        {{"$1::float4",  ['NaN']},          {'NaN'}},
+        {{"$1::float8",  ['NaN']},          {'NaN'}},
+        {{"$1::float4",  ['infinity']},     {'infinity'}},
+        {{"$1::float8",  ['infinity']},     {'infinity'}},
+        {{"$1::float4",  ['-infinity']},    {'-infinity'}},
+        {{"$1::float8",  ['-infinity']},    {'-infinity'}},
+        {{"$1::bytea",   [<<1, 2, 3>>]},    {<<1, 2, 3>>}}
     ]).
 
 select_uuid_test(Config) ->
@@ -191,45 +227,74 @@ select_oid_test(Config) ->
 select_void_test(Config) ->
     Connection = proplists:get_value(connection, Config),
     ?assertMatch({ok, #{command := select, rows := 1}, [#{pg_sleep := undefined}]},
-        execute(Connection, <<"select pg_sleep(0.1)">>)).
+        pgc_client:execute(Connection, "select pg_sleep(0.1)", [])).
 
 
 select_xid8_test(Config) ->
     Connection = proplists:get_value(connection, Config),
     ?assertMatch({ok, #{command := select, rows := 1}, [#{pg_current_xact_id := XID}]} when is_integer(XID),
-        execute(Connection, <<"select pg_current_xact_id()">>)).
+        pgc_client:execute(Connection, "select pg_current_xact_id()", [])).
 
 
 select_empty_test(Config) ->
     Connection = proplists:get_value(connection, Config),
     ?assertMatch({ok, #{command := select, rows := 0, columns := [usename]}, []},
-        execute(Connection, <<"select usename from pg_user where false">>)).
+        pgc_client:execute(Connection, "select usename from pg_user where false", [])).
 
 
-% timeout(Config) ->
-%     {error, timeout} = execute("select pg_sleep(0.1)", [], #{timeout => 50}, Config),
-%     #{rows := [{void}]} = execute("select pg_sleep(0.1)", [], #{timeout => 200}, Config).
+execute_timeout_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertMatch({error, #{name := query_canceled}},
+        pgc_client:execute(Connection, "select pg_sleep(0.1)", [], #{timeout => 50})),
+    ?assertMatch({ok, #{command := select}, [_]},
+        pgc_client:execute(Connection, "select pg_sleep(0.1)", [], #{timeout => 200})).
+
+
+transaction_commit_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertEqual({ok, 1},
+        pgc_client:transaction(Connection, fun () ->
+            {ok, #{}, [#{test := Value}]} = pgc_client:execute(Connection, <<"select 1 as test">>, []),
+            Value
+        end, #{})).
+
+
+transaction_rollback_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertEqual({error, canceled},
+        pgc_client:transaction(Connection, fun () ->
+            {ok, #{}, [#{test := 1}]} = pgc_client:execute(Connection, <<"select 1 as test">>, []),
+            pgc_client:rollback(Connection, canceled)
+        end, #{})).
+
+
+transaction_error_test(Config) ->
+    Connection = proplists:get_value(connection, Config),
+    ?assertError(canceled, pgc_client:transaction(Connection, fun () ->
+        {ok, #{}, [#{test := 1}]} = pgc_client:execute(Connection, <<"select 1 as test">>, []),
+        erlang:error(canceled)
+    end, #{})).
 
 
 hibernate_test(Config) ->
     Connection = proplists:get_value(connection, Config),
     [{memory, M0}] = erlang:process_info(Connection, [memory]),
-    {ok, #{command := select}, _} = execute(Connection, <<"select * from pg_user">>),
+    {ok, #{command := select}, _} = pgc_client:execute(Connection, <<"select * from pg_user">>, []),
     [{memory, M1}] = erlang:process_info(Connection, [memory]),
-    timer:sleep(500),
-    [{current_function, {erlang, hibernate, _}}] = erlang:process_info(Connection, [current_function]),
+    timer:sleep(300),
+    ?assertMatch([{current_function, {erlang, hibernate, _}}], erlang:process_info(Connection, [current_function])),
     [{memory, M2}] = erlang:process_info(Connection, [memory]),
     ct:log([
         "Memory usage before query: ~b bytes~n",
         "Memory usage after query: ~b bytes~n",
         "Memory usage after hibernation: ~b bytes"
     ], [M0, M1, M2]),
-    true = (M2 =< M1).
+    ?assert(M2 =< M1).
 
 
 binref_leak_test(Config) ->
     Connection = proplists:get_value(connection, Config),
-    {ok, #{command := select}, _Rows} = execute(Connection, <<"select * from pg_views">>),
+    {ok, #{command := select}, _Rows} = pgc_client:execute(Connection, <<"select * from pg_views">>, [], #{}),
     _ = erlang:garbage_collect(Connection),
     [{binary, []}] = erlang:process_info(Connection, [binary]),
     ok.
@@ -239,18 +304,17 @@ binref_leak_test(Config) ->
 % Helpers
 % ------------------------------------------------------------------------------
 
-execute(Connection, Statement) ->
-    pgc_connection:execute(Connection, Statement, [], #{}).
-
-
 select_test(Config, Cases) ->
     Connection = proplists:get_value(connection, Config),
     lists:foreach(fun({SQLExpr, Expect}) ->
-        Statement = ["select " | SQLExpr],
+        {Statement, Parameters} = case SQLExpr of
+            {SQLExprText, SQLExprParams} -> {["select " | SQLExprText], SQLExprParams};
+            SQLExprText -> {["select " | SQLExprText], []}
+        end,
         ct:log("Executing statement: ~s", [Statement]),
-        {ok, _, [Result]} = pgc_connection:execute(Connection, Statement, [], #{row => tuple}),
+        {ok, _, [Result]} = pgc_client:execute(Connection, Statement, Parameters, #{row => tuple}),
         case is_function(Expect, 2) of
-            true -> Expect(Result, "(" ++ SQLExpr ++ ") result mismatch");
-            false -> ?assertEqual(Expect, Result, "(" ++ SQLExpr ++ ") result mismatch")
+            true -> Expect(Result, "(" ++ SQLExprText ++ ") result mismatch");
+            false -> ?assertEqual(Expect, Result, "(" ++ SQLExprText ++ ") result mismatch")
         end
     end, Cases).

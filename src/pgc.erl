@@ -4,8 +4,18 @@
 ]).
 -export([
     execute/2,
-    execute/3
-    % transaction/2
+    execute/3,
+    transaction/2,
+    transaction/3
+]).
+-export_type([
+    transport_options/0,
+    transport_address/0,
+    client_options/0,
+    execute_options/0,
+    execute_metadata/0,
+    transaction_options/0,
+    transaction/0
 ]).
 
 
@@ -31,7 +41,7 @@
         application_name => unicode:chardata(),
         atom() => unicode:chardata()
     },
-    hibernate_after => timeout()
+    ping_interval => timeout()
 }.
 -type pool_options() :: #{
     name => atom(),
@@ -47,9 +57,9 @@ start_link(TransportOptions, ClientOptions, PoolOptions) ->
 -spec execute(Client, Statement) -> {ok, Metadata, Rows} | {error, Error} when
     Client :: pid(),
     Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
-    Parameters :: [term()],
+    Parameters :: [dynamic()],
     Metadata :: execute_metadata(),
-    Rows :: [term()],
+    Rows :: [#{atom() => dynamic()}],
     Error :: pgc_error:t().
 execute(Client, Statement) ->
     execute(Client, Statement, #{}).
@@ -57,16 +67,17 @@ execute(Client, Statement) ->
 
 %% @doc Prepare and execute a SQL statement.
 -spec execute(Client, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
-    Client :: pid(),
+    Client :: pid() | atom() | transaction(),
     Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
     Parameters :: [term()],
     Options :: execute_options(),
     Metadata :: execute_metadata(),
-    Rows :: [term()],
+    Rows :: [dynamic()],
     Error :: pgc_error:t().
 -type execute_options() :: #{
     cache => false | {true, atom()},
-    row => map | tuple | list | proplist
+    row => map | tuple | list | proplist,
+    timeout => timeout() | {abs, integer()}
 }.
 -type execute_metadata() :: #{
     command := atom(),
@@ -74,11 +85,89 @@ execute(Client, Statement) ->
     rows => non_neg_integer(),
     notices := [map()]
 }.
-execute(Client, Statement, _Options) when is_pid(Client); is_atom(Client) ->
-    % TODO: split Options into Checkout and Execute Options.
-    CheckoutOptions = #{},
-    ExecuteOptions = #{},
+execute({transaction, TransactionRef}, Statement, Options) when is_reference(TransactionRef) ->
+    case current_transaction() of
+        {TransactionRef, ClientPid} ->
+            Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
+            Timeout = pgc_deadline:to_abs_timeout(Deadline),
+            ExecuteOptions = #{
+                cache => maps:get(cache, Options, false),
+                row => maps:get(row, Options, map),
+                timeout => Timeout
+            },
+            {StatementText, StatementParameters} = pgc_statement:new(Statement),
+            pgc_client:execute(ClientPid, StatementText, StatementParameters, ExecuteOptions);
+        _ ->
+            erlang:error(not_in_transaction, none, [
+                {error_info, #{
+                    cause => #{
+                        1 => "invalid transaction id",
+                        general => "provided transaction ID does not match current transaction"
+                    }
+                }}
+            ])
+    end;
+execute(Client, Statement, Options) when is_pid(Client); is_atom(Client) ->
+    Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
+    Timeout = pgc_deadline:to_abs_timeout(Deadline),
+    CheckoutOptions = #{
+        timeout => Timeout
+    },
+    ExecuteOptions = #{
+        cache => maps:get(cache, Options, false),
+        row => maps:get(row, Options, map),
+        timeout => Timeout
+    },
     {StatementText, StatementParameters} = pgc_statement:new(Statement),
-    pgc_pool:with_connection(Client, fun (ConnectionPid) ->
-        pgc_connection:execute(ConnectionPid, StatementText, StatementParameters, ExecuteOptions)
+    pgc_pool:with_client(Client, fun (ClientPid) ->
+        pgc_client:execute(ClientPid, StatementText, StatementParameters, ExecuteOptions)
     end, CheckoutOptions).
+
+
+-spec transaction(Client, Transaction) -> {ok, Result} | {error, dynamic() | pgc_error:t()} when
+    Client :: pid(),
+    Transaction :: fun((transaction()) -> Result).
+transaction(Client, Transaction) ->
+    transaction(Client, Transaction, #{}).
+
+
+-spec transaction(Client, Transaction, Options) -> {ok, Result} | {error, dynamic() | pgc_error:t()} when
+    Client :: pid(),
+    Transaction :: fun((transaction()) -> Result),
+    Options :: transaction_options().
+-type transaction_options() :: #{
+    isolation => serializable | repeatable_read | read_committed | read_uncommitted | default,
+    access => read_write | read_only | default,
+    deferrable => boolean() | default
+}.
+-opaque transaction() :: {transaction, reference()}.
+transaction(Client, Transaction, Options) when is_function(Transaction, 1) ->
+    case current_transaction() of
+        undefined ->
+            pgc_pool:with_client(Client, fun (ClientPid) ->
+                TransactionRef = make_ref(),
+                erlang:put({?MODULE, transaction}, {TransactionRef, ClientPid}),
+                try
+                    pgc_client:transaction(ClientPid, fun() ->
+                        Transaction({transaction, TransactionRef})
+                    end, Options)
+                after
+                    erlang:erase({?MODULE, transaction})
+                end
+            end, #{});
+        _ ->
+            erlang:error(in_transaction, [Client, Transaction, Options], [
+                {error_info, #{
+                    cause => #{
+                        general => "cannot start a new transaction inside an existing transaction"
+                    }
+                }}
+            ])
+    end.
+
+
+%% @private
+%% @doc Returns true if the current process is inside a transaction.
+-spec current_transaction() -> undefined | {TransactionRef :: reference(), ClientPid :: pid()}.
+current_transaction() ->
+    get({?MODULE, transaction}).
