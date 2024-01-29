@@ -14,7 +14,7 @@
 -type t() :: {iodata(), [term()]}.
 -type template() :: [unicode:unicode_binary() | byte() | template_parameter() | template_identifier() | template()].
 -type template_parameter() :: {parameter, ref(term())}.
--type template_identifier() :: {identifier, ref(atom() | {atom(), atom()})}.
+-type template_identifier() :: {identifier, ref(atom() | unicode:chardata())}.
 -type ref(Value) :: #{key => term(), value := Value}.
 
 
@@ -51,10 +51,10 @@ from_template([], CommandAcc, ParamsAcc, _ParamsMap) ->
 
 
 %% @private
-encode_identifier({Namespace, Name}) when is_atom(Namespace), is_atom(Name) ->
-    encode_identifier(Namespace) ++ [<<".">> | encode_identifier(Name)];
 encode_identifier(Name) when is_atom(Name) ->
-    [<<"\"">>, string:replace(atom_to_binary(Name), <<"\"">>, <<"\"\"">>), <<"\"">>].
+    encode_identifier(atom_to_binary(Name));
+encode_identifier(Name) ->
+    [<<"\"">>, string:replace(Name, <<"\"">>, <<"\"\"">>, all), <<"\"">>].
 
 
 %% @private
