@@ -11,8 +11,8 @@
 
 init(_Options) ->
     Info = #{
-        encodes => [int4send],
-        decodes => [int4recv]
+        encodes => [int8send],
+        decodes => [int8recv]
     },
     {Info, []}.
 
