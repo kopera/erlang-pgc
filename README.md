@@ -28,7 +28,7 @@ You need to add `pgc` as a dependency to your project. If you are using `rebar3`
 
 ```erlang
 {deps, [
-    {pgc, {git, "git://github.com/kopera/erlang-pgc.git", {branch, "main"}}},
+    {pgc, {git, "git://github.com/kopera/erlang-pgc.git", {branch, "main"}}}
 ]}.
 ```
 
