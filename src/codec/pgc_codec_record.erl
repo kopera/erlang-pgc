@@ -41,7 +41,7 @@ decode(<<_Count:32/integer, Payload/binary>>, Codec, #pgc_type{namespace = Names
 % ------------------------------------------------------------------------------
 
 %% @private
-from_term(_RecordNamespace, _RecordName, FieldsDesc, Map, map) when is_map(Map) ->
+from_term(_RecordNamespace, _RecordName, FieldsDesc, Map, map) when FieldsDesc =/= undefined, is_map(Map) ->
     [{Oid, maps:get(FieldName, Map, null)} || {FieldName, Oid} <- FieldsDesc];
 % from_term(RecordNamespace, RecordName, FieldsDesc, Term, {codec, CodecModule}) ->
 %     FieldNames = [FieldName || {FieldName, _Oid} <- FieldsDesc],
