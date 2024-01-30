@@ -52,7 +52,8 @@ encode(#pgc_type{send = SendProc} = Type, Term, GetTypeFun, #codecs{} = Codecs) 
             case erlang:function_exported(CodecModule, encode, 4) of
                 true ->
                     EncodeFun = fun(SubTypeID, SubTerm) ->
-                        encode(GetTypeFun(SubTypeID), SubTerm, GetTypeFun, Codecs)
+                        {binary, Encoded} = encode(GetTypeFun(SubTypeID), SubTerm, GetTypeFun, Codecs),
+                        Encoded
                     end,
                     {binary, CodecModule:encode(Term, CodecState, Type, EncodeFun)};
                 false ->
