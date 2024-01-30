@@ -32,9 +32,13 @@ execute(Connection, StatementText, Parameters) ->
 execute(Connection, StatementText, Parameters, Options) ->
     Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
     StatementName = case Options of
-        #{cache := {true, Key}} -> atom_to_binary(Key, utf8);
+        #{cache := {true, Key}} when is_atom(Key) ->
+            atom_to_binary(Key, utf8);
+        #{cache := {true, Key}} when is_list(Key); is_binary(Key) ->
+            pgc_string:to_binary(Key);
         % #{cache := true} -> binary:encode_hex(crypto:hash(sha, Statement));
-        #{} -> <<>>
+        #{} ->
+            <<>>
     end,
     case prepare_(Connection, StatementName, StatementText, Deadline) of
         {ok, PreparedStatement} ->
@@ -76,7 +80,7 @@ execute_simple(Connection, Statement, Options) when is_binary(Statement); is_lis
     end.
 
 
--spec transaction(Connection, Fun, Options) -> {ok, Result} | {error, dynamic() | pgc_error:t()} when
+-spec transaction(Connection, Fun, Options) -> Result when
     Connection :: pid(),
     Fun :: fun(() -> Result),
     Options :: transaction_options().
@@ -91,16 +95,22 @@ transaction(Connection, Fun, Options) ->
             try Fun() of
                 Result ->
                     case transaction_commit(Connection) of
-                        ok ->
-                            {ok, Result};
-                        {error, Reason} ->
-                            transaction_rollback(Connection),
-                            {error, Reason}
+                        commit ->
+                            Result;
+                        rollback ->
+                            erlang:error(bad_transaction, [Connection, Fun, Options], [
+                                {error_info, #{
+                                    cause => #{
+                                        general => "Transaction fun returned successfully from a failed transaction",
+                                        2 => "The fun should use rollback/2 upon error to exit the transaction"
+                                    }
+                                }}
+                            ])
                     end
             catch
                 throw:{?MODULE, rollback, Connection, Reason} ->
                     transaction_rollback(Connection),
-                    {error, Reason};
+                    Reason;
                 Class:Error:Stacktrace ->
                     try
                         transaction_rollback(Connection)
@@ -108,8 +118,14 @@ transaction(Connection, Fun, Options) ->
                         erlang:raise(Class, Error, Stacktrace)
                     end
             end;
-        {error, Error} ->
-            {error, Error}
+        {error, #{class := Class, message := Message}} ->
+            erlang:error({pgc, Class}, [Connection, Fun, Options], [
+                {error_info, #{
+                    cause => #{
+                        general => Message
+                    }
+                }}
+            ])
     end.
 
 
@@ -256,9 +272,9 @@ transaction_start(Connection, Options) ->
 transaction_commit(Connection) ->
     case execute_simple(Connection, <<"commit">>, #{}) of
         {ok, #{command := commit}} ->
-            ok;
-        {error, #{} = Error} ->
-            {error, Error}
+            commit;
+        {ok, #{command := rollback}} ->
+            rollback
     end.
 
 %% @private

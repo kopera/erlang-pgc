@@ -6,7 +6,8 @@
     execute/2,
     execute/3,
     transaction/2,
-    transaction/3
+    transaction/3,
+    rollback/2
 ]).
 -export_type([
     transport_options/0,
@@ -20,7 +21,7 @@
 
 
 %% @doc Start a new PostgreSQL client.
-%% 
+%%
 %% This function is meant to be used as part of a {@link supervisor:child_spec()}.
 -spec start_link(TransportOptions, ClientOptions, PoolOptions) -> {ok, pid()} when
     TransportOptions :: transport_options(),
@@ -75,7 +76,7 @@ execute(Client, Statement) ->
     Rows :: [dynamic()],
     Error :: pgc_error:t().
 -type execute_options() :: #{
-    cache => false | {true, atom()},
+    cache => false | {true, atom() | unicode:chardata()},
     row => map | tuple | list | proplist,
     timeout => timeout() | {abs, integer()}
 }.
@@ -86,27 +87,17 @@ execute(Client, Statement) ->
     notices := [map()]
 }.
 execute({transaction, TransactionRef}, Statement, Options) when is_reference(TransactionRef) ->
-    case current_transaction() of
-        {TransactionRef, ClientPid} ->
-            Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
-            Timeout = pgc_deadline:to_abs_timeout(Deadline),
-            ExecuteOptions = #{
-                cache => maps:get(cache, Options, false),
-                row => maps:get(row, Options, map),
-                timeout => Timeout
-            },
-            {StatementText, StatementParameters} = pgc_statement:new(Statement),
-            pgc_client:execute(ClientPid, StatementText, StatementParameters, ExecuteOptions);
-        _ ->
-            erlang:error(not_in_transaction, none, [
-                {error_info, #{
-                    cause => #{
-                        1 => "invalid transaction id",
-                        general => "provided transaction ID does not match current transaction"
-                    }
-                }}
-            ])
-    end;
+    with_transaction(TransactionRef, fun(ClientPid) ->
+        Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
+        Timeout = pgc_deadline:to_abs_timeout(Deadline),
+        ExecuteOptions = #{
+            cache => maps:get(cache, Options, false),
+            row => maps:get(row, Options, map),
+            timeout => Timeout
+        },
+        {StatementText, StatementParameters} = pgc_statement:new(Statement),
+        pgc_client:execute(ClientPid, StatementText, StatementParameters, ExecuteOptions)
+    end);
 execute(Client, Statement, Options) when is_pid(Client); is_atom(Client) ->
     Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
     Timeout = pgc_deadline:to_abs_timeout(Deadline),
@@ -160,6 +151,32 @@ transaction(Client, Transaction, Options) when is_function(Transaction, 1) ->
                 {error_info, #{
                     cause => #{
                         general => "cannot start a new transaction inside an existing transaction"
+                    }
+                }}
+            ])
+    end.
+
+
+-spec rollback(Transaction, Reason) -> no_return() when
+    Transaction :: transaction(),
+    Reason :: term().
+rollback({transaction, TransactionRef}, Reason) ->
+    with_transaction(TransactionRef, fun(ClientPid) ->
+        pgc_client:rollback(ClientPid, Reason)
+    end).
+
+
+%% @private
+with_transaction(TransactionRef, Fun) ->
+    case current_transaction() of
+        {TransactionRef, ClientPid} ->
+            Fun(ClientPid);
+        _ ->
+            erlang:error(not_in_transaction, none, [
+                {error_info, #{
+                    cause => #{
+                        1 => "invalid transaction id",
+                        general => "provided transaction ID does not match current transaction"
                     }
                 }}
             ])
