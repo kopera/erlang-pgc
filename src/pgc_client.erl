@@ -220,7 +220,7 @@ transaction_start(Connection, Options) ->
             default -> <<>>;
             Other -> erlang:error(badarg, [Options], [{error_info,  #{
                 cause => #{
-                    1 => io_lib:format("invalid isolation level: ~p", [Other])
+                    1 => io_lib:format("invalid isolation level: ~w", [Other])
                 }
             }}])
         end,
@@ -230,7 +230,7 @@ transaction_start(Connection, Options) ->
             default -> <<>>;
             Other -> erlang:error(badarg, [Options], [{error_info,  #{
                 cause => #{
-                    1 => io_lib:format("invalid access mode: ~p", [Other])
+                    1 => io_lib:format("invalid access mode: ~w", [Other])
                 }
             }}])
         end,
@@ -240,7 +240,7 @@ transaction_start(Connection, Options) ->
             default -> <<>>;
             Other -> erlang:error(badarg, [Options], [{error_info,  #{
                 cause => #{
-                    1 => io_lib:format("invalid deferrable option: ~p", [Other])
+                    1 => io_lib:format("invalid deferrable option: ~w", [Other])
                 }
             }}])
         end

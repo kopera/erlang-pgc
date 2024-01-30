@@ -75,7 +75,7 @@ feature_not_supported(Message) ->
 %% @private
 -spec invalid_parameter_value(pos_integer(), term(), pgc_type:t()) -> t().
 invalid_parameter_value(Index, Value, #pgc_type{name = TypeName}) ->
-    new(<<"22023">>, {"invalid parameter of type '~s' value '~p' at index ~b", [TypeName, Value, Index]}).
+    new(<<"22023">>, {"invalid parameter of type '~s' value '~w' at index ~b", [TypeName, Value, Index]}).
 
 %% @private
 -spec invalid_sql_statement_name(unicode:chardata()) -> t().

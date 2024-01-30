@@ -123,7 +123,7 @@ handle_event(internal, {connect, TransportOptions, ConnectionOptions}, #disconne
                 econnrefused -> "connection refused";
                 timeout -> "connection timed out";
                 {tls, unavailable} -> "tls unavailable";
-                {tls, TLSError} -> {"tls failed with error: ~p", [TLSError]}
+                {tls, TLSError} -> {"tls failed with error: ~w", [TLSError]}
             end),
             {next_state, #stopping{
                 reason = Error
@@ -875,6 +875,6 @@ decode_row([Type | Types], [Value | Values], GetTypeFun, Codecs, Acc) ->
             TypeName = Type#pgc_type.name,
             Index = length(Acc) + 1,
             {error, pgc_error:protocol_violation(
-                {"failed to decode row field of type '~s' value '~p' at index ~b", [TypeName, Value, Index]}
+                {"failed to decode row field of type '~s' value '~w' at index ~b", [TypeName, Value, Index]}
             )}
     end.

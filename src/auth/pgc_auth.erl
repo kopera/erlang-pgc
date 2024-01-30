@@ -51,7 +51,7 @@ handle(sasl, AuthData, #auth{username = Username, password_fun = PasswordFun}) -
             },
             {ok, Response, State};
         false ->
-            {error, pgc_error:feature_not_supported({"unsupported SASL authentication mechanisms: ~p", [Mechanisms]})}
+            {error, pgc_error:feature_not_supported({"unsupported SASL authentication mechanisms: ~w", [Mechanisms]})}
     end;
 handle(sasl_continue, AuthData, #auth_sasl{handler = Handler, handler_state = HandlerState} = State) ->
     case Handler:continue(AuthData, HandlerState) of
@@ -61,14 +61,14 @@ handle(sasl_continue, AuthData, #auth_sasl{handler = Handler, handler_state = Ha
             },
             {ok, Response, State#auth_sasl{handler_state = HandlerState1}};
         {error, Reason} ->
-            {error, pgc_error:authentication_failure({"sasl authentication failed with error: ~p", Reason})}
+            {error, pgc_error:authentication_failure({"sasl authentication failed with error: ~w", Reason})}
     end;
 handle(sasl_final, AuthData, #auth_sasl{handler = Handler, handler_state = HandlerState}) ->
     case Handler:continue(AuthData, HandlerState) of
         ok ->
             ok;
         {error, Reason} ->
-            {error, pgc_error:authentication_failure({"sasl authentication failed with error: ~p", Reason})}
+            {error, pgc_error:authentication_failure({"sasl authentication failed with error: ~w", Reason})}
     end;
 
 handle(AuthType, _, #auth{}) ->
