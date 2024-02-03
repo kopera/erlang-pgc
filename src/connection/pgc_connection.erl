@@ -92,6 +92,9 @@ handle_event(internal, {connect, TransportOptions, ConnectionOptions}, #disconne
                     fun () -> Password  end
             end,
             PingInterval = maps:get(ping_interval, ConnectionOptions, ?default_ping_interval),
+            Codecs = maps:get(codecs, ConnectionOptions, #{}),
+            CodecsExtras = maps:get(extras, Codecs, []),
+            CodecsOptions = maps:get(options, Codecs, #{}),
             {next_state, #authenticating{
                 username = Username,
                 database = Database,
@@ -116,7 +119,7 @@ handle_event(internal, {connect, TransportOptions, ConnectionOptions}, #disconne
                 types = pgc_types:new(),
                 statements = #{},
 
-                codecs = pgc_codecs:new(#{})
+                codecs = pgc_codecs:new(CodecsExtras, CodecsOptions)
             }};
         {error, TransportError} ->
             Error = pgc_error:client_connection_failure(case TransportError of

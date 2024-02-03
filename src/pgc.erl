@@ -42,7 +42,18 @@
         application_name => unicode:chardata(),
         atom() => unicode:chardata()
     },
-    ping_interval => timeout()
+    ping_interval => timeout(),
+    codecs => #{
+        extras => [module() | {module(), map()}],
+        options => codecs_options()
+    }
+}.
+-type codecs_options() :: #{
+    enum => #{codec := module()} | atom | existing_atom | attempt_atom,
+    json => #{codec := module()},
+    record => map,
+    timestamp => {calendar, datetime} | {system_time, erlang:time_unit()},
+    time => {calendar, time} | {system_time, erlang:time_unit()}
 }.
 -type pool_options() :: #{
     name => atom(),
