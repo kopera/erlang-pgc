@@ -34,13 +34,15 @@ encode(Term, existing_atom, _Type, _) when is_atom(Term) ->
     atom_to_binary(Term, utf8);
 encode(Term, attempt_atom, _Type, _) when is_atom(Term) ->
     atom_to_binary(Term, utf8);
-encode(Term, binary, _Type, _) ->
-    _ = iolist_size(Term),
-    Term;
 encode(Term, {codec, CodecModule}, #pgc_type{namespace = Namespace, name = Name}, _) ->
     CodecModule:encode(Namespace, Name, Term);
 encode(Term, Config, Type, EncodeFun) ->
-    error(badarg, [Term, Config, Type, EncodeFun]).
+    case unicode:characters_to_binary(Term) of
+        Value when is_binary(Value) ->
+            Value;
+        _ ->
+            error(badarg, [Term, Config, Type, EncodeFun])
+    end.
 
 
 decode(Data, atom, _Type, _) ->
