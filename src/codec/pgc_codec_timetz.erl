@@ -15,17 +15,19 @@
 
 init(Options) ->
     Codec = case Options of
-        #{timestamp := {calendar, time}} -> {calendar, time};
-        #{timestamp := Unit}
+        #{time := {calendar, time}} ->
+            {calendar, time};
+        #{time := {system_time, Unit}}
             when Unit =:= second
               ; Unit =:= millisecond
               ; Unit =:= microsecond
               ; Unit =:= nanosecond
-              ; Unit =:= native -> Unit;
-        #{timestamp := _} ->
+              ; Unit =:= native ->
+            {system_time, Unit};
+        #{time := _} ->
             erlang:error(badarg, [Options]);
         #{} ->
-            native
+            {system_time, native}
     end,
     Info = #{
         encodes => [timetz_send],
@@ -53,7 +55,7 @@ from_term(Term, {calendar, time}) ->
     MicroSeconds = erlang:convert_time_unit(Seconds, second, microsecond),
     Offset = 0,
     {MicroSeconds, Offset};
-from_term(Term, Unit) ->
+from_term(Term, {system_time, Unit}) ->
     erlang:convert_time_unit(Term, Unit, microsecond).
 
 
@@ -65,6 +67,6 @@ from_term(Term, Unit) ->
 to_term({MicroSeconds, Offset}, {calendar, time}) ->
     Seconds = erlang:convert_time_unit(MicroSeconds, microsecond, second) + Offset,
     calendar:seconds_to_time(Seconds);
-to_term({MicroSeconds, Offset}, Unit) ->
-    erlang:convert_time_unit(MicroSeconds, microsecond, Unit) + 
+to_term({MicroSeconds, Offset}, {system_time, Unit}) ->
+    erlang:convert_time_unit(MicroSeconds, microsecond, Unit) +
     erlang:convert_time_unit(Offset, second, Unit).

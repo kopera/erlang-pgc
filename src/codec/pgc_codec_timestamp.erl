@@ -14,8 +14,19 @@
 
 init(Options) ->
     Codec = case Options of
-        #{timestamp := {calendar, datetime}} -> {calendar, datetime};
-        #{} -> {system_time, native}
+        #{timestamp := {calendar, datetime}} ->
+            {calendar, datetime};
+        #{timestamp := {system_time, Unit}}
+            when Unit =:= second
+              ; Unit =:= millisecond
+              ; Unit =:= microsecond
+              ; Unit =:= nanosecond
+              ; Unit =:= native ->
+            {system_time, Unit};
+        #{timestamp := _} ->
+                erlang:error(badarg, [Options]);
+        #{} ->
+            {system_time, native}
     end,
     Info = #{
         encodes => [timestamp_send, timestamptz_send],
