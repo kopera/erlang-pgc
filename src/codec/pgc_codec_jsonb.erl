@@ -30,6 +30,6 @@ encode(Term, {codec, CodecModule}) ->
 
 
 decode(<<1, Data/binary>>, binary) ->
-    <<1, Data/binary>>;
+    Data;
 decode(<<1, Data/binary>>, {codec, CodecModule}) ->
     CodecModule:decode(Data).
