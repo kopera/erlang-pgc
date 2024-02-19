@@ -263,7 +263,7 @@ transaction_commit_test(Config) ->
     ?assertEqual({ok, 1},
         pgc_client:transaction(Connection, fun () ->
             {ok, #{}, [#{test := Value}]} = pgc_client:execute(Connection, <<"select 1 as test">>, []),
-            Value
+            {ok, Value}
         end, #{})).
 
 
@@ -272,7 +272,7 @@ transaction_rollback_test(Config) ->
     ?assertEqual({error, canceled},
         pgc_client:transaction(Connection, fun () ->
             {ok, #{}, [#{test := 1}]} = pgc_client:execute(Connection, <<"select 1 as test">>, []),
-            pgc_client:rollback(Connection, canceled)
+            pgc_client:rollback(Connection, {error, canceled})
         end, #{})).
 
 
