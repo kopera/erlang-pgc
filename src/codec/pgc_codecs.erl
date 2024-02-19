@@ -112,6 +112,7 @@ default_codecs(_Options) ->
         % pgc_codec_interval,
         pgc_codec_json,
         pgc_codec_jsonb,
+        pgc_codec_ltree,
         % pgc_codec_mac_address,
         % pgc_codec_multirange,
         pgc_codec_name,

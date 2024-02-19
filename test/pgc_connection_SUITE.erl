@@ -20,7 +20,8 @@
     select_oid_test/1,
     select_void_test/1,
     select_xid8_test/1,
-    select_empty_test/1
+    select_empty_test/1,
+    select_ltree_test/1
 ]).
 -export([
     transaction_commit_test/1,
@@ -98,7 +99,8 @@ groups() ->
             select_oid_test,
             select_void_test,
             select_xid8_test,
-            select_empty_test
+            select_empty_test,
+            select_ltree_test
         ]},
         {transaction, [], [
             transaction_commit_test,
@@ -241,6 +243,12 @@ select_empty_test(Config) ->
     ?assertMatch({ok, #{command := select, rows := 0, columns := [usename]}, []},
         pgc_client:execute(Connection, "select usename from pg_user where false", [])).
 
+
+select_ltree_test(Config) ->
+    select_test(Config, [
+        {"'a.b.c'::ltree",                  {<<"a.b.c">>}},
+        {"'a.b.*'::lquery",                 {<<"a.b.*">>}}
+    ]).
 
 execute_timeout_test(Config) ->
     Connection = proplists:get_value(connection, Config),
