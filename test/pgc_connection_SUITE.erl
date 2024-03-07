@@ -69,6 +69,7 @@ init_per_testcase(_Case, Config) ->
         ping_interval => 500
     },
     {ok, Connection} = pgc_connection:start_link(TransportOptions, ConnectionOptions, self()),
+    {ok, _,[]} = pgc_client:execute(Connection, "CREATE EXTENSION IF NOT EXISTS ltree", []),
     [{connection, Connection} | Config].
 
 %% @doc https://www.erlang.org/doc/man/ct_suite#Module:end_per_testcase-2
