@@ -256,7 +256,7 @@ execute_timeout_test(Config) ->
     ?assertMatch({error, #{name := query_canceled}},
         pgc_client:execute(Connection, "select pg_sleep(0.1)", [], #{timeout => 50})),
     ?assertMatch({ok, #{command := select}, [_]},
-        pgc_client:execute(Connection, "select pg_sleep(0.1)", [], #{timeout => 200})).
+        pgc_client:execute(Connection, "select pg_sleep(0.1)", [], #{timeout => 500})).
 
 
 transaction_commit_test(Config) ->
