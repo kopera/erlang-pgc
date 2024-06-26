@@ -67,8 +67,8 @@ start_link(TransportOptions, ClientOptions, PoolOptions) ->
 %% @doc Prepare and execute a SQL statement.
 %% @equiv execute(Client, Statement, #{})
 -spec execute(Client, Statement) -> {ok, Metadata, Rows} | {error, Error} when
-    Client :: pid(),
-    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
+    Client :: pid() | atom() | transaction(),
+    Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:template(),
     Parameters :: [dynamic()],
     Metadata :: execute_metadata(),
     Rows :: [#{atom() => dynamic()}],
@@ -80,7 +80,7 @@ execute(Client, Statement) ->
 %% @doc Prepare and execute a SQL statement.
 -spec execute(Client, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
     Client :: pid() | atom() | transaction(),
-    Statement :: unicode:chardata() | {unicode:unicode_binary(), Parameters} | pgc_statement:template(),
+    Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:template(),
     Parameters :: [term()],
     Options :: execute_options(),
     Metadata :: execute_metadata(),
@@ -126,15 +126,15 @@ execute(Client, Statement, Options) when is_pid(Client); is_atom(Client) ->
     end, CheckoutOptions).
 
 
--spec transaction(Client, Transaction) -> {ok, Result} | {error, dynamic() | pgc_error:t()} when
-    Client :: pid(),
+-spec transaction(Client, Transaction) -> Result when
+    Client :: pid() | atom(),
     Transaction :: fun((transaction()) -> Result).
 transaction(Client, Transaction) ->
     transaction(Client, Transaction, #{}).
 
 
--spec transaction(Client, Transaction, Options) -> {ok, Result} | {error, dynamic() | pgc_error:t()} when
-    Client :: pid(),
+-spec transaction(Client, Transaction, Options) -> Result when
+    Client :: pid() | atom(),
     Transaction :: fun((transaction()) -> Result),
     Options :: transaction_options().
 -type transaction_options() :: #{
@@ -142,7 +142,7 @@ transaction(Client, Transaction) ->
     access => read_write | read_only | default,
     deferrable => boolean() | default
 }.
--opaque transaction() :: {transaction, reference()}.
+-type transaction() :: {transaction, reference()}.
 transaction(Client, Transaction, Options) when is_function(Transaction, 1) ->
     case current_transaction() of
         undefined ->
