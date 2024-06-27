@@ -97,7 +97,7 @@ execute(Client, Statement) ->
     rows => non_neg_integer(),
     notices := [map()]
 }.
-execute({transaction, TransactionRef}, Statement, Options) when is_reference(TransactionRef) ->
+execute(TransactionRef, Statement, Options) when is_reference(TransactionRef) ->
     with_transaction(TransactionRef, fun(ClientPid) ->
         Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
         Timeout = pgc_deadline:to_abs_timeout(Deadline),
@@ -142,7 +142,7 @@ transaction(Client, Transaction) ->
     access => read_write | read_only | default,
     deferrable => boolean() | default
 }.
--type transaction() :: {transaction, reference()}.
+-type transaction() :: reference().
 transaction(Client, Transaction, Options) when is_function(Transaction, 1) ->
     case current_transaction() of
         undefined ->
@@ -151,7 +151,7 @@ transaction(Client, Transaction, Options) when is_function(Transaction, 1) ->
                 erlang:put({?MODULE, transaction}, {TransactionRef, ClientPid}),
                 try
                     pgc_client:transaction(ClientPid, fun() ->
-                        Transaction({transaction, TransactionRef})
+                        Transaction(TransactionRef)
                     end, Options)
                 after
                     erlang:erase({?MODULE, transaction})
@@ -171,7 +171,7 @@ transaction(Client, Transaction, Options) when is_function(Transaction, 1) ->
 -spec rollback(Transaction, Reason) -> no_return() when
     Transaction :: transaction(),
     Reason :: term().
-rollback({transaction, TransactionRef}, Reason) ->
+rollback(TransactionRef, Reason) ->
     with_transaction(TransactionRef, fun(ClientPid) ->
         pgc_client:rollback(ClientPid, Reason)
     end).
