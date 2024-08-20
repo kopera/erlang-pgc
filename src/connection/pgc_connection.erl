@@ -625,6 +625,9 @@ handle_event(enter, _, #canceling{}, #connection{key = {_Id, _Secret} = BackendK
     ]),
     keep_state_and_data;
 
+handle_event(internal, #msg_data_row{}, #canceling{}, #connection{} = _ConnectionData) ->
+    keep_state_and_data;
+
 handle_event(internal, #msg_error_response{}, #canceling{}, #connection{} = _ConnectionData) ->
     keep_state_and_data;
 
