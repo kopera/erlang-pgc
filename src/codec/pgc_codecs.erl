@@ -109,7 +109,7 @@ default_codecs(_Options) ->
         pgc_codec_int2,
         pgc_codec_int4,
         pgc_codec_int8,
-        % pgc_codec_interval,
+        pgc_codec_interval,
         pgc_codec_json,
         pgc_codec_jsonb,
         pgc_codec_ltree,

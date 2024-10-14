@@ -21,7 +21,8 @@
     select_void_test/1,
     select_xid8_test/1,
     select_empty_test/1,
-    select_ltree_test/1
+    select_ltree_test/1,
+    select_interval_test/1
 ]).
 -export([
     transaction_commit_test/1,
@@ -91,7 +92,7 @@ all() ->
 %% @doc https://www.erlang.org/doc/man/ct_suite#Module:groups-0
 groups() ->
     [
-        {select, [parallel, shuffle], [
+        {select, [shuffle], [
             select_basic_test,
             select_uuid_test,
             select_array_test,
@@ -101,7 +102,8 @@ groups() ->
             select_void_test,
             select_xid8_test,
             select_empty_test,
-            select_ltree_test
+            select_ltree_test,
+            select_interval_test
         ]},
         {transaction, [], [
             transaction_commit_test,
@@ -249,6 +251,12 @@ select_ltree_test(Config) ->
     select_test(Config, [
         {"'a.b.c'::ltree",                  {<<"a.b.c">>}},
         {"'a.b.*'::lquery",                 {<<"a.b.*">>}}
+    ]).
+
+select_interval_test(Config) ->
+    select_test(Config, [
+        {"'1 day 12 hours 59 min 10 sec'::interval",    {#{microseconds => 46_750_000_000, days => 1, months => 0}}},
+        {"'1 year 2 months 1 day'::interval",           {#{microseconds => 0, days => 1, months => 14}}}
     ]).
 
 execute_timeout_test(Config) ->
