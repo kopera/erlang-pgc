@@ -1,5 +1,6 @@
-%% @private
 -module(pgc_deadline).
+-moduledoc false.
+
 -export([
     from_timeout/1,
     to_timeout/1,
@@ -14,10 +15,9 @@
     timer/1
 ]).
 
--type t() :: integer() | infinity.
+-opaque t() :: integer() | infinity.
 
 
-%% @doc create a new deadline for a given timeout.
 -spec from_timeout(timeout() | {abs, integer()}) -> t().
 from_timeout({abs, Deadline}) when is_integer(Deadline) ->
     Deadline;

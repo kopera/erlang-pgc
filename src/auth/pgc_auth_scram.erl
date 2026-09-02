@@ -1,11 +1,19 @@
-%% @private
 -module(pgc_auth_scram).
+-moduledoc false.
+
+-behaviour(pgc_auth_sasl).
 -export([
-    init/3,
+    init/1,
     continue/2
 ]).
 
+
 -define(gs2_header, <<"n,,">>).
+
+
+% ------------------------------------------------------------------------------
+% Types
+% ------------------------------------------------------------------------------
 
 -record(scram, {
     hashing_algorithm :: sha256,
@@ -30,7 +38,11 @@
     other_error.
 
 
-init(HashingAlgorithm, Username, PasswordFun) ->
+% ------------------------------------------------------------------------------
+% API
+% ------------------------------------------------------------------------------
+
+init([HashingAlgorithm, Username, PasswordFun]) ->
     ClientNonce = crypto:strong_rand_bytes(24),
     ClientFirstMessageBare = encode_attributes([
         {username, Username},
@@ -60,7 +72,7 @@ continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
                 {binding, ?gs2_header},
                 {nonce, ServerNonce}
             ]),
-            Password = pgc_string:to_binary(PasswordFun()),
+            Password = characters_to_binary(PasswordFun()),
             SaltedPassword = hi(HashingAlgorithm, Password, Salt, Iterations),
             ClientKey = crypto:mac(hmac, HashingAlgorithm, SaltedPassword, <<"Client Key">>),
             StoredKey = crypto:hash(HashingAlgorithm, ClientKey),
@@ -94,12 +106,10 @@ continue(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_bina
 % Codecs
 % ------------------------------------------------------------------------------
 
-%% @private
 decode_attributes(String) ->
     Tokens = binary:split(String, <<",">>, [global]),
     maps:from_list([decode_attribute(Token) || Token <- Tokens]).
 
-%% @private
 decode_attribute(<<"n=", Username/binary>>) -> {username, decode_username(Username)};
 decode_attribute(<<"r=", Nonce/binary>>) -> {nonce, base64:decode(Nonce)};
 decode_attribute(<<"c=", Binding/binary>>) -> {binding, base64:decode(Binding)};
@@ -110,12 +120,10 @@ decode_attribute(<<"v=", Verifier/binary>>) -> {verifier, base64:decode(Verifier
 decode_attribute(<<"e=", Error/binary>>) -> {error, decode_error(Error)}.
 
 
-%% @private
 encode_attributes(Attributes) when is_list(Attributes) ->
     lists:join($,, [encode_attribute(Name, Value) || {Name, Value} <- Attributes]).
 
 
-%% @private
 encode_attribute(username, Username) -> [<<"n=">>, encode_username(Username)];
 encode_attribute(nonce, Nonce) -> [<<"r=">>, base64:encode(Nonce)];
 encode_attribute(binding, Binding) -> [<<"c=">>, base64:encode(Binding)];
@@ -131,7 +139,6 @@ encode_attribute(error, Error) -> [<<"e=">>, encode_error(Error)].
 %
 
 
-%% @private
 -spec decode_username(binary()) -> binary().
 decode_username(Data) ->
     case decode_username(Data, <<>>) of
@@ -139,7 +146,6 @@ decode_username(Data) ->
         {ok, Username} -> Username
     end.
 
-%% @private
 decode_username(<<"=2C", Rest/binary>>, Acc) ->
     decode_username(Rest, <<Acc/binary, $,>>);
 decode_username(<<"=3D", Rest/binary>>, Acc) ->
@@ -154,12 +160,10 @@ decode_username(<<>>, Acc) ->
     {ok, Acc}.
 
 
-%% @private
 -spec encode_username(unicode:chardata()) -> binary().
 encode_username(Username) ->
-    encode_username(pgc_string:to_binary(Username), <<>>).
+    encode_username(characters_to_binary(Username), <<>>).
 
-%% @private
 encode_username(<<$,, Rest/binary>>, Acc) ->
     encode_username(Rest, <<Acc/binary, "=2C">>);
 encode_username(<<$=, Rest/binary>>, Acc) ->
@@ -174,7 +178,6 @@ encode_username(<<>>, Acc) ->
 % Errors codec
 %
 
-%% @private
 -spec decode_error(binary()) -> error().
 decode_error(<<"invalid-encoding">>) -> invalid_encoding;
 decode_error(<<"extensions-not-supported">>) -> extensions_not_supported;
@@ -190,7 +193,6 @@ decode_error(<<"other-error">>) -> other_error;
 decode_error(_) -> other_error.
 
 
-%% @private
 -spec encode_error(error()) -> binary().
 encode_error(invalid_encoding)-> <<"invalid-encoding">>;
 encode_error(extensions_not_supported)-> <<"extensions-not-supported">>;
@@ -213,3 +215,16 @@ encode_error(other_error)-> <<"other-error">>.
 hi(HashingAlgorithm, Password, Salt, Iterations) ->
     #{size := KeyLen} = crypto:hash_info(HashingAlgorithm),
     crypto:pbkdf2_hmac(HashingAlgorithm, Password, Salt, Iterations, KeyLen).
+
+
+% ------------------------------------------------------------------------------
+% Helpers
+% ------------------------------------------------------------------------------
+
+-spec characters_to_binary(unicode:chardata()) -> unicode:unicode_binary().
+characters_to_binary(Input) ->
+    case unicode:characters_to_binary(Input) of
+        {error, _, _} -> erlang:error(badarg, [Input]);
+        {incomplete, _, _} -> erlang:error(badarg, [Input]);
+        UnicodeBinary -> UnicodeBinary
+    end.

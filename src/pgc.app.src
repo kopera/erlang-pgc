@@ -13,4 +13,4 @@
 
     {licenses, ["Apache 2.0"]},
     {links, []}
- ]}.
+]}.
