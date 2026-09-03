@@ -106,11 +106,58 @@ actually call them.
     | {ok, Ack :: term(), State}
     when State :: term().
 
+-doc "A statement within a query completed (`CommandComplete`'s tag), or was empty (`EmptyQueryResponse`).".
+-callback handle_result(CommandTag :: binary() | empty, State) -> {ok, State} when
+    State :: term().
+
+-doc """
+A statement within a query failed. Not fatal -- unlike a startup failure, the
+connection keeps running, still waiting for `ReadyForQuery` from whatever
+statements/results follow.
+""".
+-callback handle_error(pgc_protocol:error(), State) -> {ok, State} when
+    State :: term().
+
+-doc """
+Called while idle (`#ready{}`) on a `gen_statem:call/2,3` this module doesn't itself
+understand -- `pgc_connection` never hardcodes what a call means, that's entirely up to
+the handler. Return `{query, Sql, State}` to run a simple query natively -- its outcome
+is reported via `c:handle_row_data/3`/`c:handle_result/2`/`c:handle_error/2`, not
+through this call's reply; stash `From` in `State` and reply later (e.g. once
+`c:handle_result/2` observes the query finished) for a request/reply-shaped API. Return
+`{reply, Reply, State}` to answer immediately without touching the connection, or
+`{noreply, State}` to defer without triggering anything.
+""".
+-callback handle_call(Request :: term(), gen_statem:from(), State) -> Result when
+    Result ::
+          {query, unicode:chardata(), State}
+        | {reply, Reply :: term(), State}
+        | {noreply, State},
+    State :: term().
+
+-doc "Same as `c:handle_call/3`, for `gen_statem:cast/2`.".
+-callback handle_cast(Request :: term(), State) -> Result when
+    Result :: {query, unicode:chardata(), State} | {noreply, State},
+    State :: term().
+
+-doc """
+Called for any `info` message this connection doesn't recognize as transport traffic.
+Unlike `c:handle_call/3`/`c:handle_cast/2` this can fire in *any* state, not just
+`#ready{}` -- a sub-protocol may well be mid-flight -- so it cannot trigger a new
+operation the way those can: purely observational/state-updating.
+""".
+-callback handle_info(Info :: term(), State) -> {noreply, State} when
+    State :: term().
+
 -optional_callbacks([
     handle_row_data/3,
-    handle_replication_data/2
+    handle_replication_data/2,
+    handle_result/2,
+    handle_error/2,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2
 ]).
-
 
 -define(DEFAULT_PING_INTERVAL, 5000).
 -define(DEFAULT_HIBERNATE_AFTER, ?DEFAULT_PING_INTERVAL div 2).
@@ -385,7 +432,8 @@ terminate(Reason, State, #connection{} = Data) ->
 format_status(Status) ->
     maps:map(fun
         (data, #connection{} = Data) ->
-            Data#connection{types = redacted};
+            %% This structure can be very large
+            Data#connection{types = pgc_connection_types:new()};
         (_Key, Value) ->
             Value
     end, Status).
@@ -411,17 +459,10 @@ handle_event(internal, #connect{} = Connect, #disconnected{}, Data) ->
     } = Connect,
     case pgc_transport:connect(Address, ConnectOptions, ConnectTimeout) of
         {ok, Transport} ->
-            {ok, NextState, NextData, Actions} = pgc_connection_startup_protocol:init({
-                User,
-                Password,
-                Database,
-                Parameters,
-                Data#pgc_connection:connection{transport = Transport}
-            }),
             ok = pgc_transport:set_active(Transport, once),
-            {next_state, NextState, NextData, [
-                {push_callback_module, pgc_connection_startup_protocol} | Actions
-            ]};
+            start_startup_protocol(User, Password, Database, Parameters, Data#pgc_connection:connection{
+                transport = Transport
+            });
         {error, ConnectError} ->
             stop_with_error(ConnectError, Data)
     end;
@@ -441,8 +482,25 @@ handle_event(state_timeout, ping, #ready{}, Data) ->
         {next_event, internal, #send{messages = [#pgc_protocol_message:sync{}]}}
     ]};
 
-handle_event(cast, _Request, #ready{}, _Data) ->
-    keep_state_and_data;
+handle_event({call, From}, Request, #ready{}, Data) ->
+    #connection{handler_module = Module, handler_state = HandlerState0} = Data,
+    case Module:handle_call(Request, From, HandlerState0) of
+        {query, Sql, HandlerState1} ->
+            start_simple_query_protocol(Sql, Data#connection{handler_state = HandlerState1});
+        {reply, Reply, HandlerState1} ->
+            {keep_state, Data#connection{handler_state = HandlerState1}, [{reply, From, Reply}]};
+        {noreply, HandlerState1} ->
+            {keep_state, Data#connection{handler_state = HandlerState1}}
+    end;
+
+handle_event(cast, Request, #ready{}, Data) ->
+    #connection{handler_module = Module, handler_state = HandlerState0} = Data,
+    case Module:handle_cast(Request, HandlerState0) of
+        {query, Sql, HandlerState1} ->
+            start_simple_query_protocol(Sql, Data#connection{handler_state = HandlerState1});
+        {noreply, HandlerState1} ->
+            {keep_state, Data#connection{handler_state = HandlerState1}}
+    end;
 
 
 % -------------------------------------------------------------------------------
@@ -547,8 +605,9 @@ handle_common_event(info, Info, State, Data) ->
                             stop_with_error(TransportError, Data)
                     end;
                 unknown ->
-                    logger:warning("pgc_connection: unexpected message ~w", [Info]),
-                    keep_state_and_data
+                    #connection{handler_module = Module, handler_state = HandlerState0} = Data,
+                    {noreply, HandlerState1} = Module:handle_info(Info, HandlerState0),
+                    {keep_state, Data#connection{handler_state = HandlerState1}}
             end
     end;
 
@@ -583,6 +642,32 @@ handle_common_event(internal, #send{messages = Messages}, _State, #connection{tr
         {error, Error} ->
             {next_state, #stopping{reason = Error}, Data#connection{transport = undefined}}
     end.
+
+
+% ------------------------------------------------------------------------------
+% Subprotocols
+% ------------------------------------------------------------------------------
+
+-doc false.
+start_startup_protocol(User, Password, Database, Parameters, Data) ->
+    {ok, NextState, NextData, Actions} = pgc_connection_startup_protocol:init({
+        User,
+        Password,
+        Database,
+        Parameters,
+        Data
+    }),
+    {next_state, NextState, NextData, [
+        {push_callback_module, pgc_connection_startup_protocol} | Actions
+    ]}.
+
+
+-doc false.
+start_simple_query_protocol(Sql, Data) ->
+    {ok, NextState, NextData, Actions} = pgc_connection_simple_query_protocol:init({Sql, Data}),
+    {next_state, NextState, NextData, [
+        {push_callback_module, pgc_connection_simple_query_protocol} | Actions
+    ]}.
 
 
 % ------------------------------------------------------------------------------

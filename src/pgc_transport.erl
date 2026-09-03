@@ -128,6 +128,8 @@ tcp_connect(Address, Deadline) ->
             {error, #error{reason = tcp_socket_error(Reason)}}
     end.
 
+
+-spec tls_connect(gen_tcp:socket(), [ssl:tls_client_option()], pgc_deadline:t()) -> {ok, ssl:sslsocket()} | {error, #error{}}.
 tls_connect(Socket, TLSOptions, Deadline) ->
     Timeout = pgc_deadline:to_timeout(Deadline),
     case ssl:connect(Socket, TLSOptions, Timeout) of
