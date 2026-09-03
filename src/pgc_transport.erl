@@ -3,7 +3,7 @@
     connect/3,
     dup/2,
     send/2,
-    % recv/2,
+    recv/2,
     close/1,
     % shutdown/2,
     set_active/2,
@@ -168,6 +168,25 @@ send(#tcp_transport{socket = Socket}, Data) ->
 send(#tls_transport{socket = Socket}, Data) ->
     case ssl:send(Socket, Data) of
         ok -> ok;
+        % elp:ignore W0027
+        {error, Reason} -> {error, #error{reason = tls_socket_error(Reason)}}
+    end.
+
+-doc """
+Reads whatever the peer sends, or waits for it to close its end -- the socket must be
+passive (`connect/3` always sets one up that way; this doesn't work after `set_active/2`
+has switched it to `true`/`once`). `Timeout` bounds the wait.
+""".
+-spec recv(t(), timeout()) -> {ok, binary()} | {error, error()}.
+recv(#tcp_transport{socket = Socket}, Timeout) ->
+    case gen_tcp:recv(Socket, 0, Timeout) of
+        {ok, Data} -> {ok, Data};
+        % elp:ignore W0027
+        {error, Reason} -> {error, #error{reason = tcp_socket_error(Reason)}}
+    end;
+recv(#tls_transport{socket = Socket}, Timeout) ->
+    case ssl:recv(Socket, 0, Timeout) of
+        {ok, Data} -> {ok, Data};
         % elp:ignore W0027
         {error, Reason} -> {error, #error{reason = tls_socket_error(Reason)}}
     end.

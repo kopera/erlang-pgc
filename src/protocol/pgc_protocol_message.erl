@@ -65,9 +65,9 @@
 
 -record #row_description_field{
     name :: binary(),
-    table_oid :: pgc_protocol_data_type:oid() | 0,
+    table_oid :: pgc_protocol:oid() | 0,
     field_number :: pos_integer() | 0,
-    type_oid :: pgc_protocol_data_type:oid(),
+    type_oid :: pgc_protocol:oid(),
     type_size :: integer(),
     type_modifier :: integer(),
     format :: text | binary
@@ -198,7 +198,7 @@
 }.
 -record #parameter_description{
     count :: non_neg_integer(),
-    types :: [pgc_protocol_data_type:oid()]
+    types :: [pgc_protocol:oid()]
 }.
 -record #parameter_status{
     name :: binary(),
@@ -207,7 +207,7 @@
 -record #parse{
     name :: iodata(),
     statement :: iodata(),
-    types :: [pgc_protocol_data_type:oid() | 0]
+    types :: [pgc_protocol:oid() | 0]
 }.
 -record #parse_complete{}.
 -record #password{

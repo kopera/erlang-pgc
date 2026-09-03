@@ -1,28 +1,32 @@
 -module(pgc_auth_scram).
 -moduledoc false.
 
--behaviour(pgc_auth_sasl).
 -export([
-    init/1,
-    continue/2
+    init/3,
+    handle_continue/2,
+    handle_final/2
+]).
+-export_type([
+    state/0,
+    error/0
 ]).
 
+-define(gs2_header, ~"n,,").
 
--define(gs2_header, <<"n,,">>).
 
-
-% ------------------------------------------------------------------------------
+% -----------------------------------------------------------------------------
 % Types
-% ------------------------------------------------------------------------------
+% -----------------------------------------------------------------------------
 
--record(scram, {
+-record #scram{
     hashing_algorithm :: sha256,
-    username :: unicode:unicode_binary(),
-    password_fun :: fun(() -> unicode:unicode_binary()),
+    username :: unicode:chardata(),
+    password_fun :: fun(() -> unicode:chardata()),
     c_nonce :: binary(),
     c_first_message_bare :: iodata(),
     s_signature :: binary() | undefined
-}).
+}.
+-type state() :: #scram{}.
 
 -type error() ::
     invalid_encoding |
@@ -38,11 +42,18 @@
     other_error.
 
 
-% ------------------------------------------------------------------------------
+% -----------------------------------------------------------------------------
 % API
-% ------------------------------------------------------------------------------
+% -----------------------------------------------------------------------------
 
-init([HashingAlgorithm, Username, PasswordFun]) ->
+
+-spec init(HashingAlgorithm, Username, Password) -> {ok, ClientFirstMessage, State} when
+    HashingAlgorithm :: sha256,
+    Username :: unicode:chardata(),
+    Password :: fun(() -> unicode:chardata()),
+    ClientFirstMessage :: iodata(),
+    State :: state().
+init(HashingAlgorithm, Username, PasswordFun) ->
     ClientNonce = crypto:strong_rand_bytes(24),
     ClientFirstMessageBare = encode_attributes([
         {username, Username},
@@ -53,10 +64,17 @@ init([HashingAlgorithm, Username, PasswordFun]) ->
         username = Username,
         password_fun = PasswordFun,
         c_nonce = ClientNonce,
-        c_first_message_bare = ClientFirstMessageBare
+        c_first_message_bare = ClientFirstMessageBare,
+        s_signature = undefined
     }}.
 
-continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
+
+-spec handle_continue(ServerFirstMessage, State) -> {ok, ClientFinalMessage, State} | {error, Error} when
+    ServerFirstMessage :: iodata(),
+    ClientFinalMessage :: iodata(),
+    Error :: error(),
+    State :: state().
+handle_continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
     #scram{
         hashing_algorithm = HashingAlgorithm,
         password_fun = PasswordFun,
@@ -87,8 +105,14 @@ continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
                 {proof, ClientProof}
             ]),
             {ok, ClientFinalMessage, State#scram{s_signature = ServerSignature}}
-    end;
-continue(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_binary(ServerSignature) ->
+    end.
+
+
+-spec handle_final(ServerFinalMessage, State) -> ok | {error, Error} when
+    ServerFinalMessage :: iodata(),
+    Error :: error(),
+    State :: state().
+handle_final(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_binary(ServerSignature) ->
     case decode_attributes(ServerFinalMessage) of
         #{error := Error} ->
             {error, Error};
@@ -100,7 +124,6 @@ continue(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_bina
                     {error, invalid_proof}
             end
     end.
-
 
 % ------------------------------------------------------------------------------
 % Codecs

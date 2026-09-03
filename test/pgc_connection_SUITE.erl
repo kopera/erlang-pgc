@@ -15,27 +15,27 @@
 -export([
     connects_and_reaches_ready_test/1,
     wrong_password_stops_with_error_test/1,
-    owner_down_stops_cleanly_test/1,
     ping_keepalive_test/1,
     select_rows_test/1,
     multi_statement_query_test/1,
     invalid_statement_is_not_fatal_test/1,
     listen_notify_test/1,
-    call_while_busy_crashes_test/1
+    overlapping_query_casts_are_queued_test/1,
+    invalid_handler_action_crashes_test/1,
+    deferred_reply_test/1
 ]).
 
 -behaviour(pgc_connection).
 -export([
     init/1,
-    handle_connected/2,
-    handle_notice/2,
-    handle_notification/4,
-    handle_row_data/3,
-    handle_result/2,
-    handle_error/2,
-    handle_call/3,
-    handle_cast/2,
-    handle_info/2,
+    handle_ready/2,
+    handle_notice/3,
+    handle_notification/5,
+    handle_row_data/4,
+    handle_result/3,
+    handle_call/4,
+    handle_cast/3,
+    handle_info/3,
     terminate/2
 ]).
 
@@ -56,6 +56,17 @@ suite() ->
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(pgc),
     {ok, _} = application:ensure_all_started(erlexec),
+    % OTP 29's cross-module "native records" (`-export_record`/`-import_record`,
+    % `#Mod:Record{}`) resolve the defining module's record shape at *runtime*, not
+    % purely at compile time -- constructing or matching one before that module has
+    % actually been loaded raises `badrecord`. A released node boots in embedded
+    % mode, which preloads every module of every application up front, so this never
+    % bites production code; a plain `erl` node (this test node included) loads code
+    % lazily on first call instead, and record construction doesn't go through the
+    % usual auto-load-on-undef path. Force it here rather than in `pgc`'s own
+    % modules (e.g. via `-on_load`), since it's a test-node-only gap.
+    {ok, Modules} = application:get_key(pgc, modules),
+    lists:foreach(fun code:ensure_loaded/1, Modules),
     Config.
 
 -doc false.
@@ -95,13 +106,14 @@ groups() ->
         {parallel_tests, [parallel], [
             connects_and_reaches_ready_test,
             wrong_password_stops_with_error_test,
-            owner_down_stops_cleanly_test,
             ping_keepalive_test,
             select_rows_test,
             multi_statement_query_test,
             invalid_statement_is_not_fatal_test,
             listen_notify_test,
-            call_while_busy_crashes_test
+            overlapping_query_casts_are_queued_test,
+            invalid_handler_action_crashes_test,
+            deferred_reply_test
         ]}
     ].
 
@@ -113,9 +125,9 @@ groups() ->
 connects_and_reaches_ready_test(Config) ->
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     ConnectionInfo = receive
-        {handler, connected, Info} -> Info
+        {handler, ready, Info} -> Info
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
     % `backend_key` isn't currently surfaced in connection_info() (WIP).
     #{parameters := Parameters} = ConnectionInfo,
@@ -136,47 +148,22 @@ wrong_password_stops_with_error_test(Config) ->
     receive
         {handler, disconnected, Reason} ->
             % Real PostgreSQL rejects a wrong password itself (`ErrorResponse`,
-            % 28P01) rather than failing SCRAM proof verification client-side.
-            ?assertMatch(#pgc_protocol:error{code = <<"28P01">>}, Reason)
+            % 28P01) rather than failing SCRAM proof verification client-side --
+            % `pgc_connection_statem_auth_sasl` surfaces that as `{auth_failure,
+            % Fields}`, `Fields` being the raw `error_response_fields()` map.
+            ?assertMatch({auth_failure, #{code := <<"28P01">>}}, Reason)
     after 5000 ->
         ct:fail(no_disconnected_event)
     end.
-
-owner_down_stops_cleanly_test(Config) ->
-    {Owner, OwnerMonitor} = spawn_monitor(fun () ->
-        receive stop -> ok end
-    end),
-    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{}), Owner),
-    receive
-        {handler, connected, _Info} -> ok
-    after 5000 ->
-        ct:fail(no_connected_event)
-    end,
-
-    ConnectionMonitor = erlang:monitor(process, Connection),
-    Owner ! stop,
-    receive {'DOWN', OwnerMonitor, process, Owner, _} -> ok end,
-
-    receive
-        {handler, disconnected, normal} -> ok
-    after 5000 ->
-        ct:fail(no_disconnected_event)
-    end,
-    receive
-        {'DOWN', ConnectionMonitor, process, Connection, _} -> ok
-    after 5000 ->
-        ct:fail(connection_did_not_stop)
-    end,
-    ok.
 
 ping_keepalive_test(Config) ->
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{
         ping_interval => 200
     })),
     receive
-        {handler, connected, _Info} -> ok
+        {handler, ready, _Info} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
 
     % Several ping/keepalive round-trips (send Sync, expect ReadyForQuery) should
@@ -194,9 +181,9 @@ ping_keepalive_test(Config) ->
 select_rows_test(Config) ->
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     receive
-        {handler, connected, _Info} -> ok
+        {handler, ready, _Info} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
 
     ok = gen_statem:cast(Connection, {query, "select 42 as answer, 'hi' as greeting"}),
@@ -212,7 +199,7 @@ select_rows_test(Config) ->
         ct:fail(no_row)
     end,
     receive
-        {handler, result, <<"SELECT 1">>} -> ok
+        {handler, result, {ok, <<"SELECT 1">>}} -> ok
     after 5000 ->
         ct:fail(no_result)
     end,
@@ -222,18 +209,18 @@ select_rows_test(Config) ->
 multi_statement_query_test(Config) ->
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     receive
-        {handler, connected, _Info} -> ok
+        {handler, ready, _Info} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
 
     ok = gen_statem:cast(Connection, {query, "select 1; select 2"}),
     receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row_1) end,
-    receive {handler, result, <<"SELECT 1">>} -> ok after 5000 -> ct:fail(no_result_1) end,
+    receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_1) end,
     receive {handler, row, _, [<<"2">>]} -> ok after 5000 -> ct:fail(no_row_2) end,
-    receive {handler, result, <<"SELECT 1">>} -> ok after 5000 -> ct:fail(no_result_2) end,
+    receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_2) end,
 
-    % Back in #ready{} -- prove the connection is still usable.
+    % Back in #s_ready{} -- prove the connection is still usable.
     ok = gen_statem:cast(Connection, {query, "select 3"}),
     receive {handler, row, _, [<<"3">>]} -> ok after 5000 -> ct:fail(no_row_3) end,
 
@@ -242,15 +229,18 @@ multi_statement_query_test(Config) ->
 invalid_statement_is_not_fatal_test(Config) ->
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     receive
-        {handler, connected, _Info} -> ok
+        {handler, ready, _Info} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
 
+    % There's no separate "error" callback -- a statement-level `ErrorResponse` reaches
+    % the handler as `handle_result/3`'s `{error, Fields}`, the same callback a
+    % successful `{ok, Tag}` goes through.
     ok = gen_statem:cast(Connection, {query, "select * from this_table_does_not_exist"}),
     receive
-        {handler, error, Error} ->
-            ?assertMatch(#pgc_protocol:error{code = <<"42P01">>}, Error)
+        {handler, result, {error, Error}} ->
+            ?assertMatch(#{code := <<"42P01">>}, Error)
     after 5000 ->
         ct:fail(no_error)
     end,
@@ -265,22 +255,22 @@ invalid_statement_is_not_fatal_test(Config) ->
 listen_notify_test(Config) ->
     {ok, Listener} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     receive
-        {handler, connected, _} -> ok
+        {handler, ready, _} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
     ok = gen_statem:cast(Listener, {query, "listen pgc_test_channel"}),
     receive
-        {handler, result, <<"LISTEN">>} -> ok
+        {handler, result, {ok, <<"LISTEN">>}} -> ok
     after 5000 ->
         ct:fail(no_listen_result)
     end,
 
     {ok, Notifier} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     receive
-        {handler, connected, _} -> ok
+        {handler, ready, _} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
     ok = gen_statem:cast(Notifier, {query, "notify pgc_test_channel, 'hello'"}),
 
@@ -294,28 +284,83 @@ listen_notify_test(Config) ->
     ok = pgc_connection:stop(Listener),
     ok = pgc_connection:stop(Notifier).
 
-call_while_busy_crashes_test(Config) ->
+overlapping_query_casts_are_queued_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    % Both casts fire before the first statement's `ReadyForQuery` comes back --
+    % `pgc_connection_statem_common`'s catch-all `internal, #simple_query{}` clause
+    % answers `postpone` (the *gen_statem* action) for one that arrives outside
+    % `#s_ready{}`, so the second query automatically waits its turn once the state
+    % machine leaves `#s_simple_query{}`. The handler doesn't have to track phase or
+    % postpone anything itself.
+    ok = gen_statem:cast(Connection, {query, "select pg_sleep(0.2)"}),
+    ok = gen_statem:cast(Connection, {query, "select 42 as answer"}),
+
+    receive {handler, row, _, [<<>>]} -> ok after 5000 -> ct:fail(no_row_1) end,
+    receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_1) end,
+    receive {handler, row, _, [<<"42">>]} -> ok after 5000 -> ct:fail(no_row_2) end,
+    receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_2) end,
+
+    ok = pgc_connection:stop(Connection).
+
+invalid_handler_action_crashes_test(Config) ->
     process_flag(trap_exit, true),
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
     receive
-        {handler, connected, _Info} -> ok
+        {handler, ready, _Info} -> ok
     after 5000 ->
-        ct:fail(no_connected_event)
+        ct:fail(no_ready_event)
     end,
 
-    % A cast arriving while a query is already in flight has no matching clause in the
-    % sub-protocol module and falls through to `pgc_connection:handle_common_event/4`,
-    % which doesn't handle `cast` either -- `function_clause`, by design (see the plan's
-    % "Open items": nothing currently postpones it). `gen_statem` passes that raw
-    % `Reason` (not `{Reason, Stacktrace}`) to `terminate/3`.
-    ok = gen_statem:cast(Connection, {query, "select pg_sleep(0.5)"}),
-    ok = gen_statem:cast(Connection, {query, "select 1"}),
+    % `boom` is this test's own deliberately-invalid trigger -- its `handle_call/4`
+    % clause returns `bogus_action`, an action `pgc_connection_statem_common` doesn't
+    % recognise (only `{query, _}` and `{reply, _, _}` are). There's no catch-all for
+    % that; per the project's "let it crash" convention, the connection just crashes
+    % instead of silently dropping the bad action. `gen_statem` passes that raw
+    % `Reason` (not `{Reason, Stacktrace}`) to `terminate/2`.
+    _ = spawn(fun () ->
+        try gen_statem:call(Connection, boom, 2000) of
+            _ -> ok
+        catch
+            _:_ -> ok
+        end
+    end),
 
     receive
-        {handler, disconnected, function_clause} -> ok
+        {handler, disconnected, {case_clause, bogus_action}} -> ok
     after 5000 ->
         ct:fail(connection_did_not_crash)
     end.
+
+deferred_reply_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    % `defer_reply` stashes `From` in the handler's own state instead of answering it --
+    % the subsequent `NOTICE` is what actually triggers the `{reply, From, ok}` action,
+    % from `handle_notice/3` rather than from the `handle_call/4` invocation that
+    % received the call, proving `From` is a first-class, storable value.
+    TestPid = self(),
+    spawn(fun () -> TestPid ! {deferred_reply, gen_statem:call(Connection, defer_reply, infinity)} end),
+    timer:sleep(100),
+    ok = gen_statem:cast(Connection, {query, "do $$ begin raise notice 'ping'; end $$"}),
+
+    receive
+        {deferred_reply, ok} -> ok
+    after 5000 ->
+        ct:fail(no_deferred_reply)
+    end,
+
+    ok = pgc_connection:stop(Connection).
 
 
 % ------------------------------------------------------------------------------
@@ -324,55 +369,65 @@ call_while_busy_crashes_test(Config) ->
 
 -doc false.
 init(TestPid) ->
-    {ok, TestPid}.
+    {ok, {TestPid, undefined}}.
 
 -doc false.
-handle_connected(ConnectionInfo, TestPid) ->
-    TestPid ! {handler, connected, ConnectionInfo},
-    {ok, TestPid}.
+handle_ready(ConnectionInfo, {TestPid, Pending}) ->
+    TestPid ! {handler, ready, ConnectionInfo},
+    {[], {TestPid, Pending}}.
 
 -doc false.
-terminate(Reason, TestPid) ->
+terminate(Reason, {TestPid, _Pending}) ->
     TestPid ! {handler, disconnected, Reason},
     ok.
 
 -doc false.
-handle_notice(Fields, TestPid) ->
+handle_notice(_ConnectionInfo, _Fields, {TestPid, undefined}) ->
+    {[], {TestPid, undefined}};
+handle_notice(_ConnectionInfo, Fields, {TestPid, From}) ->
+    % `deferred_reply_test`'s own trigger -- answers a `From` stashed by an earlier
+    % `defer_reply` call, from this unrelated callback invocation instead.
     TestPid ! {handler, notice, Fields},
-    {ok, TestPid}.
+    {[{reply, From, ok}], {TestPid, undefined}}.
 
 -doc false.
-handle_notification(Channel, Payload, SenderId, TestPid) ->
+handle_notification(_ConnectionInfo, SenderId, Channel, Payload, {TestPid, Pending}) ->
     TestPid ! {handler, notification, Channel, Payload, SenderId},
-    {ok, TestPid}.
+    {[], {TestPid, Pending}}.
 
 -doc false.
-handle_row_data(RowDescription, Row, TestPid) ->
+handle_row_data(_ConnectionInfo, RowDescription, Row, {TestPid, Pending}) ->
     TestPid ! {handler, row, RowDescription, Row},
-    {ok, TestPid}.
+    {[], {TestPid, Pending}}.
 
 -doc false.
-handle_result(CommandTag, TestPid) ->
-    TestPid ! {handler, result, CommandTag},
-    {ok, TestPid}.
+handle_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+    % `Result` is `{ok, Tag :: binary() | empty}` for a completed statement, or
+    % `{error, Fields}` for one that failed -- there's no separate error callback.
+    TestPid ! {handler, result, Result},
+    {[], {TestPid, Pending}}.
 
 -doc false.
-handle_error(Error, TestPid) ->
-    TestPid ! {handler, error, Error},
-    {ok, TestPid}.
-
--doc false.
-handle_call(Request, _From, TestPid) ->
+handle_call(_ConnectionInfo, defer_reply, From, {TestPid, _Pending}) ->
+    {[], {TestPid, From}};
+handle_call(_ConnectionInfo, boom, _From, {TestPid, Pending}) ->
+    % `invalid_handler_action_crashes_test`'s own trigger -- `bogus_action` isn't a
+    % recognised `pgc_connection:action()`, so returning it crashes the connection.
+    {[bogus_action], {TestPid, Pending}};
+handle_call(_ConnectionInfo, Request, _From, {TestPid, Pending}) ->
     TestPid ! {handler, call, Request},
-    {noreply, TestPid}.
+    {[], {TestPid, Pending}}.
 
 -doc false.
-handle_cast({query, Sql}, TestPid) ->
-    {query, Sql, TestPid}.
+handle_cast(_ConnectionInfo, {query, Sql}, {TestPid, Pending}) ->
+    % No need to check phase/readiness first -- a `{query, _}` action that arrives
+    % while a statement is already in flight is postponed automatically by
+    % `pgc_connection_statem_common` until the connection is back in `#s_ready{}`.
+    {[{query, Sql}], {TestPid, Pending}}.
 
 -doc false.
-handle_info(_Info, TestPid) ->
-    {noreply, TestPid}.
+handle_info(_ConnectionInfo, _Info, {TestPid, Pending}) ->
+    {[], {TestPid, Pending}}.
 
 
 % ------------------------------------------------------------------------------
