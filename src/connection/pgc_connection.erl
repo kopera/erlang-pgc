@@ -185,7 +185,7 @@ stop(ConnectionRef) ->
     gen_statem:stop(ConnectionRef).
 
 
--spec call(connection_ref(), term(), timeout()) -> term().
+-spec call(connection_ref(), term(), timeout()) -> dynamic().
 call(ConnectionRef, Request, Timeout) ->
     gen_statem:call(ConnectionRef, Request, Timeout).
 
