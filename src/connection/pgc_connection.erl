@@ -11,7 +11,8 @@
     start_ret/0,
     connection_name/0,
     connection_ref/0,
-    connection_info/0
+    connection_info/0,
+    row_description/0
 ]).
 
 -define(DEFAULT_PING_INTERVAL, 5000).
@@ -38,7 +39,7 @@ The connection reached `ReadyForQuery`.
 
 -callback handle_row_data(ConnectionInfo, RowDescription, RowData, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
-    RowDescription :: [pgc_protocol_message:row_description_field()],
+    RowDescription :: row_description(),
     RowData :: [null | binary()],
     State :: term().
 
@@ -55,7 +56,7 @@ The connection reached `ReadyForQuery`.
         row_description := RowDescription
     },
     ParametersDescription :: [pgc_protocol:oid()],
-    RowDescription :: [pgc_protocol_message:row_description_field()],
+    RowDescription :: row_description(),
     State :: term().
 
 -callback handle_unprepare_result(ConnectionInfo, Result, State) -> {[action()], State} when
@@ -149,6 +150,8 @@ The connection is about to stop. No further callbacks follow.
     % backend_key := {non_neg_integer(), binary()} | undefined,
     parameters := #{binary() => binary()}
 }.
+
+-type row_description() :: [pgc_protocol_message:row_description_field()].
 
 -type action() ::
     {query, Text :: unicode:chardata()}

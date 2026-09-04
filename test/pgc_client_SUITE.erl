@@ -17,6 +17,8 @@
     execute_error_is_not_fatal_test/1,
     execute_row_formats_test/1,
     execute_timeout_cancels_query_test/1,
+    execute_streams_rows_test/1,
+    execute_halt_cancels_query_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
     transaction_exception_rolls_back_test/1
@@ -72,6 +74,8 @@ groups() ->
             execute_error_is_not_fatal_test,
             execute_row_formats_test,
             execute_timeout_cancels_query_test,
+            execute_streams_rows_test,
+            execute_halt_cancels_query_test,
             transaction_commit_test,
             transaction_rollback_test,
             transaction_exception_rolls_back_test
@@ -125,6 +129,36 @@ execute_timeout_cancels_query_test(Config) ->
 
     % If cancellation actually reached Postgres, the connection is free again almost
     % immediately -- without it, this would block for the remaining ~9.8s of the sleep.
+    {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
+        pgc_client:execute(Connection, "select 1 as n", [])
+    end),
+    ?assert(Time < 2_000_000),
+
+    ok = pgc_client:stop(Connection).
+
+execute_streams_rows_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    Fun = fun (_RowDescription, [N], Acc) -> {cont, [N | Acc]} end,
+    {ok, Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 5) as n", [], Fun, [], #{}),
+    ?assertMatch(#{command := select, rows := 5}, Metadata),
+    ?assertEqual([<<"5">>, <<"4">>, <<"3">>, <<"2">>, <<"1">>], Values),
+
+    ok = pgc_client:stop(Connection).
+
+execute_halt_cancels_query_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    Fun = fun (_RowDescription, [N], Acc) ->
+        case N of
+            <<"3">> -> {halt, [N | Acc]};
+            _ -> {cont, [N | Acc]}
+        end
+    end,
+    {ok, _Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 1000000) as n", [], Fun, [], #{}),
+    ?assertEqual([<<"3">>, <<"2">>, <<"1">>], Values),
+
+    % Cancellation should free the connection quickly rather than draining a million rows.
     {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),

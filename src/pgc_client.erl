@@ -7,20 +7,18 @@
 -export([
     execute/3,
     execute/4,
+    execute/6,
     transaction/3,
     rollback/2
 ]).
 -export_type([
     parameters/0,
-    row_format/0,
-    execute_options/0,
     transaction_options/0
 ]).
 
 -behaviour(pgc_connection).
 -export([
     init/1,
-    handle_call/4,
     handle_cast/3,
     handle_prepare_result/3,
     handle_query_result/3,
@@ -32,10 +30,7 @@
 
 -record #req{
     ref :: reference(),
-    from :: gen_statem:from(),
-    parameters :: pgc_connection_statem_extended_query:execute_parameters(),
-    row_format :: row_format(),
-    rows :: [term()]
+    parameters :: pgc_connection_statem_extended_query:execute_parameters()
 }.
 
 -record #state{
@@ -76,57 +71,72 @@ stop(ConnectionRef) ->
     pgc_connection:stop(ConnectionRef).
 
 
--doc """
-Parameters for a parameterized statement -- until codecs land, these are sent to
-Postgres as-is (in text format), rather than encoded from arbitrary Erlang terms.
-""".
--type parameters() :: [iodata() | null].
-
--type row_format() :: map | list | tuple | proplist.
-
--type execute_options() :: #{
-    row => row_format(),
-    timeout => timeout()
-}.
-
 -spec execute(Connection, StatementText, Parameters) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pgc_connection:connection_ref(),
     StatementText :: unicode:chardata(),
     Parameters :: parameters(),
-    Metadata :: #{command := atom(), rows => non_neg_integer()},
-    Rows :: [term()],
-    Error :: pgc_protocol_message:error_response_fields().
+    Metadata :: result_metadata(),
+    Rows :: result_rows(),
+    Error :: execute_error().
 execute(Connection, StatementText, Parameters) ->
     execute(Connection, StatementText, Parameters, #{}).
 
 
 -doc """
-Runs a parameterized statement through parse/bind/execute.
+Runs a parameterized statement through parse/bind/execute, collecting every row into a
+list shaped per `Options`' `row` (`map` by default).
 
 `Options`' `timeout`, if given, bounds only the wait for a reply -- on expiry, the query
 is cancelled on the server (a `CancelRequest`, per the wire protocol) rather than left to
-run to completion unattended, and this exits the same way any other timed-out
-`gen_statem:call/3` does (`exit({timeout, _})`).
+run to completion unattended, and this exits the same way a timed-out `gen_statem:call/3`
+would (`exit({timeout, _})`).
 """.
 -spec execute(Connection, StatementText, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pgc_connection:connection_ref(),
     StatementText :: unicode:chardata(),
     Parameters :: parameters(),
-    Options :: execute_options(),
-    Metadata :: #{command := atom(), rows => non_neg_integer()},
-    Rows :: [term()],
-    Error :: pgc_protocol_message:error_response_fields().
+    Options :: #{
+        row => map | list | tuple | proplist,
+        timeout => timeout()
+    },
+    Metadata :: result_metadata(),
+    Rows :: result_rows(),
+    Error :: execute_error().
+-type parameters() :: [iodata() | null].
+-type result_metadata() :: #{
+    command := atom(),
+    rows => non_neg_integer()
+}.
+-type result_rows() :: [map() | list() | tuple()].
+-type execute_error() :: pgc_protocol_message:error_response_fields().
 execute(Connection, StatementText, Parameters, Options) ->
     RowFormat = maps:get(row, Options, map),
-    Timeout = maps:get(timeout, Options, infinity),
-    Ref = erlang:make_ref(),
-    try
-        pgc_connection:call(Connection, {execute, Ref, StatementText, Parameters, RowFormat}, Timeout)
-    catch
-        exit:{timeout, _} = Reason ->
-            ok = pgc_connection:cast(Connection, {cancel, Ref}),
-            exit(Reason)
+    RemainingOptions = maps:without([row], Options),
+    case execute(Connection, StatementText, Parameters, fun (RowDescription, Values, Acc) ->
+        {cont, [format_row(RowFormat, RowDescription, Values) | Acc]}
+    end, [], RemainingOptions) of
+        {ok, Metadata, Rows} ->
+            {ok, Metadata, lists:reverse(Rows)};
+        {error, _} = Error -> Error
     end.
+
+
+-doc """
+Runs a parameterized statement through parse/bind/execute, folding `Fun` over each row as
+it arrives rather than collecting the whole result set connection-side. A halted fold
+cancels the query on the server; see `execute/4` for `Options`' `timeout` semantics.
+""".
+-spec execute(Connection, StatementText, Parameters, Fun, Acc, Options) -> {ok, Metadata, Acc} | {error, Error} when
+    Connection :: pgc_connection:connection_ref(),
+    StatementText :: unicode:chardata(),
+    Parameters :: parameters(),
+    Fun :: fun((pgc_connection:row_description(), [null | binary()], Acc) -> {cont, Acc} | {halt, Acc}),
+    Options :: #{timeout => timeout()},
+    Metadata :: #{command := atom(), rows => non_neg_integer()},
+    Error :: execute_error().
+execute(Connection, StatementText, Parameters, Fun, Acc, Options) ->
+    Timeout = maps:get(timeout, Options, infinity),
+    run(Connection, fun (Ref) -> {execute, Ref, StatementText, Parameters} end, Fun, Acc, Timeout).
 
 
 -doc """
@@ -140,8 +150,43 @@ Used internally for `commit`, `rollback` and `start transaction`.
     Rows :: [term()],
     Error :: pgc_protocol_message:error_response_fields().
 execute_simple(Connection, StatementText) ->
-    Ref = erlang:make_ref(),
-    pgc_connection:call(Connection, {query, Ref, StatementText}, infinity).
+    Fun = fun (_RowDescription, _Values, Acc) -> {cont, Acc} end,
+    run(Connection, fun (Ref) -> {query, Ref, StatementText} end, Fun, [], infinity).
+
+
+-doc false.
+run(Connection, Request, Fun, Acc, Timeout) ->
+    Ref = erlang:monitor(process, Connection, [{alias, demonitor}]),
+    try
+        ok = pgc_connection:cast(Connection, Request(Ref)),
+        collect(Connection, Ref, Fun, Acc, pgc_deadline:from_timeout(Timeout))
+    after
+        erlang:demonitor(Ref, [flush])
+    end.
+
+-doc false.
+collect(Connection, Ref, Fun, Acc, Deadline) ->
+    receive
+        {row, Ref, RowDescription, Values} ->
+            case Fun(RowDescription, Values, Acc) of
+                {cont, Acc1} ->
+                    collect(Connection, Ref, Fun, Acc1, Deadline);
+                {halt, Acc1} ->
+                    ok = pgc_connection:cast(Connection, {cancel, Ref}),
+                    {ok, #{}, Acc1}
+            end;
+        {done, Ref, {ok, Tag}} ->
+            {ok, decode_tag(Tag), Acc};
+        {done, Ref, empty} ->
+            {ok, #{}, Acc};
+        {done, Ref, {error, Fields}} ->
+            {error, Fields};
+        {'DOWN', Ref, process, _, Reason} ->
+            exit(Reason)
+    after pgc_deadline:to_timeout(Deadline) ->
+        ok = pgc_connection:cast(Connection, {cancel, Ref}),
+        exit({timeout, {?MODULE, execute, [Connection]}})
+    end.
 
 
 -type transaction_options() :: #{
@@ -237,28 +282,20 @@ init([]) ->
     {ok, #state{pending = []}}.
 
 -doc false.
-handle_call(_ConnectionInfo, {execute, Ref, StatementText, Parameters, RowFormat}, From, State) ->
+handle_cast(_ConnectionInfo, {execute, Ref, StatementText, Parameters}, State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
-        from = From,
-        parameters = [{text, Parameter} || Parameter <- Parameters],
-        row_format = RowFormat,
-        rows = []
+        parameters = [{text, Parameter} || Parameter <- Parameters]
     },
     {[{prepare, ~"", StatementText}], State#state{pending = Pending ++ [Req]}};
-handle_call(_ConnectionInfo, {query, Ref, StatementText}, From, State) ->
+handle_cast(_ConnectionInfo, {query, Ref, StatementText}, State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
-        from = From,
-        parameters = [],
-        row_format = map,
-        rows = []
+        parameters = []
     },
-    {[{query, StatementText}], State#state{pending = Pending ++ [Req]}}.
-
--doc false.
+    {[{query, StatementText}], State#state{pending = Pending ++ [Req]}};
 handle_cast(_ConnectionInfo, {cancel, Ref}, State) ->
     #state{pending = Pending} = State,
     case Pending of
@@ -272,13 +309,14 @@ handle_prepare_result(_ConnectionInfo, {ok, Name, _StatementDescription}, State)
     {[{execute, Name, Req#req.parameters, #{}}], State};
 handle_prepare_result(_ConnectionInfo, {error, Fields}, State) ->
     #state{pending = [Req | Pending]} = State,
-    {[{reply, Req#req.from, {error, Fields}}], State#state{pending = Pending}}.
+    Req#req.ref ! {done, Req#req.ref, {error, Fields}},
+    {[], State#state{pending = Pending}}.
 
 -doc false.
 handle_row_data(_ConnectionInfo, RowDescription, Values, State) ->
-    #state{pending = [Req | Pending]} = State,
-    Row = row_value(Req#req.row_format, RowDescription, Values),
-    {[], State#state{pending = [Req#req{rows = [Row | Req#req.rows]} | Pending]}}.
+    #state{pending = [Req | _]} = State,
+    Req#req.ref ! {row, Req#req.ref, RowDescription, Values},
+    {[], State}.
 
 -doc false.
 handle_query_result(ConnectionInfo, Result, State) ->
@@ -287,28 +325,21 @@ handle_query_result(ConnectionInfo, Result, State) ->
 -doc false.
 handle_execute_result(_ConnectionInfo, Result, State) ->
     #state{pending = [Req | Pending]} = State,
-    Reply = case Result of
-        {ok, Tag} ->
-            {ok, decode_tag(Tag), lists:reverse(Req#req.rows)};
-        empty ->
-            {ok, #{}, []};
-        {error, Fields} ->
-            {error, Fields}
-    end,
-    {[{reply, Req#req.from, Reply}], State#state{pending = Pending}}.
+    Req#req.ref ! {done, Req#req.ref, Result},
+    {[], State#state{pending = Pending}}.
 
 
 % -----------------------------------------------------------------------------
 % Helpers
 % -----------------------------------------------------------------------------
 
-row_value(map, Fields, Values) ->
+format_row(map, Fields, Values) ->
     maps:from_list(lists:zip([Field#row_description_field.name || Field <- Fields], Values));
-row_value(list, _Fields, Values) ->
+format_row(list, _Fields, Values) ->
     Values;
-row_value(tuple, _Fields, Values) ->
+format_row(tuple, _Fields, Values) ->
     list_to_tuple(Values);
-row_value(proplist, Fields, Values) ->
+format_row(proplist, Fields, Values) ->
     lists:zip([Field#row_description_field.name || Field <- Fields], Values).
 
 -spec decode_tag(undefined) -> #{};
