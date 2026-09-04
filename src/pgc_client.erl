@@ -104,7 +104,7 @@ would (`exit({timeout, _})`).
     Error :: execute_error().
 -type parameters() :: [iodata() | null].
 -type result_metadata() :: #{
-    command := atom(),
+    command := binary(),
     rows => non_neg_integer()
 }.
 -type result_rows() :: [map() | list() | tuple()].
@@ -132,7 +132,7 @@ cancels the query on the server; see `execute/4` for `Options`' `timeout` semant
     Parameters :: parameters(),
     Fun :: fun((pgc_connection:row_description(), [null | binary()], Acc) -> {cont, Acc} | {halt, Acc}),
     Options :: #{timeout => timeout()},
-    Metadata :: #{command := atom(), rows => non_neg_integer()},
+    Metadata :: result_metadata(),
     Error :: execute_error().
 execute(Connection, StatementText, Parameters, Fun, Acc, Options) ->
     Timeout = maps:get(timeout, Options, infinity),
@@ -146,7 +146,7 @@ Used internally for `commit`, `rollback` and `start transaction`.
 -spec execute_simple(Connection, StatementText) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pgc_connection:connection_ref(),
     StatementText :: unicode:chardata(),
-    Metadata :: #{command := atom(), rows => non_neg_integer()},
+    Metadata :: result_metadata(),
     Rows :: [term()],
     Error :: pgc_protocol_message:error_response_fields().
 execute_simple(Connection, StatementText) ->
@@ -220,7 +220,7 @@ transaction(Connection, Fun, Options) ->
         })
     ],
     case execute_simple(Connection, StartStatementText) of
-        {ok, #{command := start_transaction}, []} ->
+        {ok, #{command := ~"start transaction"}, []} ->
             ok;
         {error, #{} = StartError} ->
             erlang:error({transaction_start_failed, StartError}, [Connection, Fun, Options])
@@ -228,9 +228,9 @@ transaction(Connection, Fun, Options) ->
     try Fun() of
         Result ->
             case execute_simple(Connection, ~"commit") of
-                {ok, #{command := commit}, []} ->
+                {ok, #{command := ~"commit"}, []} ->
                     Result;
-                {ok, #{command := rollback}, []} ->
+                {ok, #{command := ~"rollback"}, []} ->
                     erlang:error(bad_transaction, [Connection, Fun, Options], [
                         {error_info, #{
                             cause => #{
@@ -343,29 +343,27 @@ format_row(proplist, Fields, Values) ->
     lists:zip([Field#row_description_field.name || Field <- Fields], Values).
 
 -spec decode_tag(undefined) -> #{};
-                 (unicode:unicode_binary()) -> #{command := atom(), rows => non_neg_integer()}.
+                 (unicode:unicode_binary()) -> #{command := binary(), rows => non_neg_integer()}.
 decode_tag(undefined) ->
     #{};
-decode_tag(~"START TRANSACTION") ->
-    #{command => start_transaction};
 decode_tag(Tag) ->
     case binary:split(Tag, ~" ", [global]) of
         [~"SELECT", Count] ->
-            #{command => select, rows => binary_to_integer(Count)};
+            #{command => ~"select", rows => binary_to_integer(Count)};
         [~"INSERT", _Oid, Count] ->
-            #{command => insert, rows => binary_to_integer(Count)};
+            #{command => ~"insert", rows => binary_to_integer(Count)};
         [~"UPDATE", Count] ->
-            #{command => update, rows => binary_to_integer(Count)};
+            #{command => ~"update", rows => binary_to_integer(Count)};
         [~"DELETE", Count] ->
-            #{command => delete, rows => binary_to_integer(Count)};
+            #{command => ~"delete", rows => binary_to_integer(Count)};
         [~"MERGE", Count] ->
-            #{command => merge, rows => binary_to_integer(Count)};
+            #{command => ~"merge", rows => binary_to_integer(Count)};
         [~"MOVE", Count] ->
-            #{command => move, rows => binary_to_integer(Count)};
+            #{command => ~"move", rows => binary_to_integer(Count)};
         [~"FETCH", Count] ->
-            #{command => fetch, rows => binary_to_integer(Count)};
+            #{command => ~"fetch", rows => binary_to_integer(Count)};
         [~"COPY", Count] ->
-            #{command => copy, rows => binary_to_integer(Count)};
-        [Command | _Rest] ->
-            #{command => binary_to_atom(string:lowercase(Command))}
+            #{command => ~"copy", rows => binary_to_integer(Count)};
+        _ ->
+            #{command => string:lowercase(Tag)}
     end.

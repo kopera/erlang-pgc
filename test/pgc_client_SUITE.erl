@@ -91,7 +91,7 @@ execute_with_parameters_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
     {ok, Metadata, Rows} = pgc_client:execute(Connection, "select $1::int4 as n, $2::text as t", [<<"42">>, <<"hi">>]),
-    ?assertMatch(#{command := select, rows := 1}, Metadata),
+    ?assertMatch(#{command := ~"select", rows := 1}, Metadata),
     ?assertEqual([#{<<"n">> => <<"42">>, <<"t">> => <<"hi">>}], Rows),
 
     % The connection reuses the same unnamed statement slot on every call --
@@ -141,7 +141,7 @@ execute_streams_rows_test(Config) ->
 
     Fun = fun (_RowDescription, [N], Acc) -> {cont, [N | Acc]} end,
     {ok, Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 5) as n", [], Fun, [], #{}),
-    ?assertMatch(#{command := select, rows := 5}, Metadata),
+    ?assertMatch(#{command := ~"select", rows := 5}, Metadata),
     ?assertEqual([<<"5">>, <<"4">>, <<"3">>, <<"2">>, <<"1">>], Values),
 
     ok = pgc_client:stop(Connection).
