@@ -102,7 +102,7 @@
 }.
 
 -record #callback{
-    name :: handle_ready | handle_row_data | handle_result | handle_notice | handle_notification | handle_call | handle_cast | handle_info,
+    name :: handle_ready | handle_row_data | handle_query_result | handle_prepare_result | handle_unprepare_result | handle_execute_result | handle_notice | handle_notification | handle_call | handle_cast | handle_info,
     args :: [term()]
 }.
 

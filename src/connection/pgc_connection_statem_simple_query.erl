@@ -24,7 +24,7 @@
 % States ----------------------------------------------------------------------
 
 -record #s_simple_query {
-    row_description :: [pgc_protocol_message:row_description_field()] | undefined
+    row_description :: [pgc_protocol_message:row_description_field()]
 }.
 
 % ------------------------------------------------------------------------------
@@ -52,7 +52,7 @@ enter(QueryText, ConnectionData) ->
     ConnectionData :: #data{}.
 init({QueryText, ConnectionData}) ->
     {ok, #s_simple_query{
-        row_description = undefined
+        row_description = []
     }, ConnectionData, [
         {next_event, internal, #send{
             messages = [
@@ -81,25 +81,27 @@ handle_event(internal, #row_description{fields = Fields}, #s_simple_query{} = St
     {next_state, State#s_simple_query{row_description = Fields}, ConnectionData, [
     ]};
 
-handle_event(internal, #data_row{values = Values}, #s_simple_query{row_description = RowDescription}, _Data)
-        when RowDescription =/= undefined->
+handle_event(internal, #data_row{values = Values}, #s_simple_query{} = State, _ConnectionData) ->
+    #s_simple_query{
+        row_description = RowDescription
+    } = State,
     {keep_state_and_data, [
         {next_event, internal, #callback{name = handle_row_data, args = [RowDescription, Values]}}
     ]};
 
-handle_event(internal, #command_complete{tag = Tag}, #s_simple_query{} = State, Data) ->
-    {next_state, State#s_simple_query{row_description = undefined}, Data, [
-        {next_event, internal, #callback{name = handle_result, args = [{ok, Tag}]}}
-    ]};
-
-handle_event(internal, #empty_query_response{}, #s_simple_query{} = State, Data) ->
-    {next_state, State#s_simple_query{row_description = undefined}, Data, [
-        {next_event, internal, #callback{name = handle_result, args = [{ok, empty}]}}
-    ]};
-
-handle_event(internal, #error_response{fields = Fields}, #s_simple_query{}, _Data) ->
+handle_event(internal, #command_complete{tag = Tag}, #s_simple_query{} = _State, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_result, args = [{error, Fields}]}}
+        {next_event, internal, #callback{name = handle_query_result, args = [{ok, Tag}]}}
+    ]};
+
+handle_event(internal, #empty_query_response{}, #s_simple_query{} = _State, _ConnectionData) ->
+    {keep_state_and_data, [
+        {next_event, internal, #callback{name = handle_query_result, args = [empty]}}
+    ]};
+
+handle_event(internal, #error_response{fields = Fields}, #s_simple_query{}, _ConnectionData) ->
+    {keep_state_and_data, [
+        {next_event, internal, #callback{name = handle_query_result, args = [{error, Fields}]}}
     ]};
 
 handle_event(internal, #ready_for_query{status = Status}, #s_simple_query{}, ConnectionData) ->

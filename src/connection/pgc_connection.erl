@@ -42,9 +42,30 @@ The connection reached `ReadyForQuery`.
     RowData :: [null | binary()],
     State :: term().
 
--callback handle_result(ConnectionInfo, Result, State) -> {[action()], State} when
+-callback handle_query_result(ConnectionInfo, Result, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
-    Result :: {ok, Tag :: binary() | empty} | {error, pgc_protocol_message:error_response_fields()},
+    Result :: empty | {ok, Tag :: binary()} | {error, pgc_protocol_message:error_response_fields()},
+    State :: term().
+
+-callback handle_prepare_result(ConnectionInfo, Result, State) -> {[action()], State} when
+    ConnectionInfo :: connection_info(),
+    Result :: {ok, StatementName :: unicode:chardata(), StatementDescription} | {error, pgc_protocol_message:error_response_fields()},
+    StatementDescription :: #{
+        parameters_description := ParametersDescription,
+        row_description := RowDescription
+    },
+    ParametersDescription :: [pgc_protocol:oid()],
+    RowDescription :: [pgc_protocol_message:row_description_field()],
+    State :: term().
+
+-callback handle_unprepare_result(ConnectionInfo, Result, State) -> {[action()], State} when
+    ConnectionInfo :: connection_info(),
+    Result :: {ok, Name :: unicode:chardata()},
+    State :: term().
+
+-callback handle_execute_result(ConnectionInfo, Result, State) -> {[action()], State} when
+    ConnectionInfo :: connection_info(),
+    Result :: empty | {ok, Tag :: binary()} | {error, pgc_protocol_message:error_response_fields()},
     State :: term().
 
 -doc """
@@ -88,7 +109,10 @@ The connection is about to stop. No further callbacks follow.
 -optional_callbacks([
     handle_ready/2,
     handle_row_data/4,
-    handle_result/3,
+    handle_query_result/3,
+    handle_prepare_result/3,
+    handle_unprepare_result/3,
+    handle_execute_result/3,
     handle_notice/3,
     handle_notification/5,
     handle_call/4,

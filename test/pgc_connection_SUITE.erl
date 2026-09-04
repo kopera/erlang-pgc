@@ -32,7 +32,7 @@
     handle_notice/3,
     handle_notification/5,
     handle_row_data/4,
-    handle_result/3,
+    handle_query_result/3,
     handle_call/4,
     handle_cast/3,
     handle_info/3,
@@ -235,7 +235,7 @@ invalid_statement_is_not_fatal_test(Config) ->
     end,
 
     % There's no separate "error" callback -- a statement-level `ErrorResponse` reaches
-    % the handler as `handle_result/3`'s `{error, Fields}`, the same callback a
+    % the handler as `handle_query_result/3`'s `{error, Fields}`, the same callback a
     % successful `{ok, Tag}` goes through.
     ok = gen_statem:cast(Connection, {query, "select * from this_table_does_not_exist"}),
     receive
@@ -401,8 +401,8 @@ handle_row_data(_ConnectionInfo, RowDescription, Row, {TestPid, Pending}) ->
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
-    % `Result` is `{ok, Tag :: binary() | empty}` for a completed statement, or
+handle_query_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+    % `Result` is `empty | {ok, Tag :: binary()}` for a completed statement, or
     % `{error, Fields}` for one that failed -- there's no separate error callback.
     TestPid ! {handler, result, Result},
     {[], {TestPid, Pending}}.
