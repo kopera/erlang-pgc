@@ -7,7 +7,7 @@
     format_status/1
 ]).
 
--import_record(pgc_connection_statem, [data, send, callback, simple_query]).
+-import_record(pgc_connection_statem, [data, send, callback, query]).
 -import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response]).
 
 % -----------------------------------------------------------------------------
@@ -15,7 +15,7 @@
 % -----------------------------------------------------------------------------
 
 -doc false.
-handle_event(internal, #simple_query{}, _State, #data{}) ->
+handle_event(internal, #query{}, _State, #data{}) ->
     % Always postpone until handled by the ready state
     {keep_state_and_data, [postpone]};
 
@@ -47,7 +47,7 @@ handle_event(internal, #callback{name = CallbackName, args = CallbackArgs0}, Sta
         {reply, _, _} = Reply ->
             Reply;
         {query, Text} ->
-            {next_event, internal, #simple_query{text = Text}}
+            {next_event, internal, #query{text = Text}}
     end || CallbackAction <- CallbackActions]};
 
 handle_event(internal, #parameter_status{name = Name, value = Value}, _State, ConnectionData) ->

@@ -21,7 +21,7 @@
 -export_record([
     send,
     callback,
-    simple_query
+    query
     % extended_query
 ]).
 
@@ -106,7 +106,7 @@
     args :: [term()]
 }.
 
--record #simple_query{
+-record #query{
     text :: unicode:chardata()
 }.
 
@@ -240,8 +240,8 @@ handle_event(state_timeout, ping, #s_ready{status = Status}, ConnectionData) ->
         ]}}
     ]};
 
-handle_event(internal, #simple_query{} = Query, #s_ready{}, ConnectionData) ->
-    #simple_query{
+handle_event(internal, #query{} = Query, #s_ready{}, ConnectionData) ->
+    #query{
         text = QueryText
     } = Query,
     pgc_connection_statem_simple_query:enter(QueryText, ConnectionData);
