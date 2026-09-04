@@ -7,7 +7,7 @@
     format_status/1
 ]).
 
--import_record(pgc_connection_statem, [data, send, callback, query, prepare, unprepare, execute]).
+-import_record(pgc_connection_statem, [data, send, callback, query, prepare, unprepare, execute, cancel]).
 -import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response]).
 
 % -----------------------------------------------------------------------------
@@ -30,6 +30,17 @@ handle_event(internal, #unprepare{}, _State, #data{}) ->
 handle_event(internal, #execute{}, _State, #data{}) ->
     % Always postpone until handled by the ready state
     {keep_state_and_data, [postpone]};
+
+handle_event(internal, #cancel{}, _State, #data{transport = undefined}) ->
+    keep_state_and_data;
+
+handle_event(internal, #cancel{}, _State, #data{backend_key = undefined}) ->
+    logger:warning("pgc_connection: cancel request failed: not supported"),
+    keep_state_and_data;
+
+handle_event(internal, #cancel{}, _State, #data{transport = Transport, backend_key = {Id, Secret}}) ->
+    _ = spawn(fun () -> send_cancel_request(Transport, Id, Secret) end),
+    keep_state_and_data;
 
 handle_event(internal, #send{}, _State, #data{transport = undefined}) ->
     keep_state_and_data;
@@ -65,7 +76,9 @@ handle_event(internal, #callback{name = CallbackName, args = CallbackArgs0}, Sta
         {unprepare, Name} ->
             {next_event, internal, #unprepare{name = Name}};
         {execute, Name, Parameters, Options} ->
-            {next_event, internal, #execute{name = Name, parameters = Parameters, options = Options}}
+            {next_event, internal, #execute{name = Name, parameters = Parameters, options = Options}};
+        cancel ->
+            {next_event, internal, #cancel{}}
     end || CallbackAction <- CallbackActions]};
 
 handle_event(internal, #parameter_status{name = Name, value = Value}, _State, ConnectionData) ->
@@ -167,39 +180,20 @@ connection_info(_State, ConnectionData) ->
         parameters => BackendParameters
     }.
 
-% handle_callback_actions([], State, ConnectionData) ->
-%     {next_state, State, ConnectionData};
-% handle_callback_actions([{reply, From, Reply} | Actions], State, ConnectionData) ->
-%     gen_statem:reply(From, Reply),
-
-%     case ConnectionData of
-%         #data{transport = undefined} ->
-%             handle_callback_actions(Actions, State, ConnectionData);
-%         #data{backend_key = undefined} ->
-%             logger:warning("pgc_connection: cancel request failed: not supported"),
-%             handle_callback_actions(Actions, State, ConnectionData);
-%         #data{transport = Transport, backend_key = {Id, Secret}} ->
-%             maybe
-%                 {ok, CancelTransport} ?= pgc_transport:dup(Transport, 5000),
-%                 ok ?= pgc_transport:send(CancelTransport, pgc_protocol_messages:encode([
-%                     #pgc_protocol_message:cancel_request{id = Id, secret = Secret}
-%                 ])),
-%                 _ = pgc_transport:recv(CancelTransport, 5000),
-%                 ok = pgc_transport:close(CancelTransport)
-%             else
-%                 _ ->
-%                     logger:warning("pgc_connection: cancel request failed: ~p", [Reason])
-%             end,
-%             handle_callback_actions(Actions, State, ConnectionData)
-%     end.
-
-
-    % case is_ready(Phase) andalso lists:keytake(query, 1, Actions) of
-    %     {value, {query, Sql}, RestActions} ->
-    %         {FilteredActions, Data1} = apply_side_effects(RestActions, Data0),
-    %         {next_state, NextState, NextData, QueryActions} = start_simple_query_protocol(Sql, Data1),
-    %         {next_state, NextState, NextData, QueryActions ++ gen_statem_actions(FilteredActions)};
-    %     _ ->
-    %         {FilteredActions, Data1} = apply_side_effects(Actions, Data0),
-    %         {keep_state, Data1, gen_statem_actions(FilteredActions)}
-    % end.
+-doc """
+Cancels whatever the backend is currently executing, by opening a second, short-lived
+connection to the same peer and sending a `CancelRequest` on it, per the PostgreSQL wire
+protocol (a query's own socket can't be used to cancel itself). Runs in a spawned process
+so a slow/unreachable peer can't stall the connection's main socket while this waits.
+""".
+send_cancel_request(Transport, Id, Secret) ->
+    case pgc_transport:dup(Transport, 5000) of
+        {ok, CancelTransport} ->
+            _ = pgc_transport:send(CancelTransport, pgc_protocol_messages:encode([
+                #pgc_protocol_message:cancel_request{id = Id, secret = Secret}
+            ])),
+            _ = pgc_transport:recv(CancelTransport, 5000),
+            pgc_transport:close(CancelTransport);
+        {error, Reason} ->
+            logger:warning("pgc_connection: cancel request failed: ~p", [Reason])
+    end.

@@ -155,7 +155,8 @@ The connection is about to stop. No further callbacks follow.
     | {prepare, Name :: unicode:chardata(), Text :: unicode:chardata()}
     | {unprepare, Name :: unicode:chardata()}
     | {execute, Name :: unicode:chardata(), Parameters :: pgc_connection_statem_extended_query:execute_parameters(), Options :: pgc_connection_statem_extended_query:execute_options()}
-    | {reply, gen_statem:from(), Reply :: term()}.
+    | {reply, gen_statem:from(), Reply :: term()}
+    | cancel.
 
 
 % -----------------------------------------------------------------------------

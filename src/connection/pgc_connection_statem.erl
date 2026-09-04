@@ -24,7 +24,8 @@
     query,
     prepare,
     unprepare,
-    execute
+    execute,
+    cancel
 ]).
 
 % -----------------------------------------------------------------------------
@@ -125,6 +126,9 @@
     name :: unicode:chardata(),
     parameters :: pgc_connection_statem_extended_query:execute_parameters(),
     options :: pgc_connection_statem_extended_query:execute_options()
+}.
+
+-record #cancel{
 }.
 
 % ------------------------------------------------------------------------------

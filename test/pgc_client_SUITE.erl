@@ -16,6 +16,7 @@
     execute_with_parameters_test/1,
     execute_error_is_not_fatal_test/1,
     execute_row_formats_test/1,
+    execute_timeout_cancels_query_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
     transaction_exception_rolls_back_test/1
@@ -70,6 +71,7 @@ groups() ->
             execute_with_parameters_test,
             execute_error_is_not_fatal_test,
             execute_row_formats_test,
+            execute_timeout_cancels_query_test,
             transaction_commit_test,
             transaction_rollback_test,
             transaction_exception_rolls_back_test
@@ -113,6 +115,20 @@ execute_row_formats_test(Config) ->
     {ok, _, [[<<"1">>, <<"2">>]]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => list}),
     {ok, _, [{<<"1">>, <<"2">>}]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => tuple}),
     {ok, _, [[{<<"a">>, <<"1">>}, {<<"b">>, <<"2">>}]]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => proplist}),
+
+    ok = pgc_client:stop(Connection).
+
+execute_timeout_cancels_query_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    ?assertExit({timeout, _}, pgc_client:execute(Connection, "select pg_sleep(10)", [], #{timeout => 200})),
+
+    % If cancellation actually reached Postgres, the connection is free again almost
+    % immediately -- without it, this would block for the remaining ~9.8s of the sleep.
+    {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
+        pgc_client:execute(Connection, "select 1 as n", [])
+    end),
+    ?assert(Time < 2_000_000),
 
     ok = pgc_client:stop(Connection).
 

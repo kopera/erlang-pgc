@@ -21,6 +21,7 @@
 -export([
     init/1,
     handle_call/4,
+    handle_cast/3,
     handle_prepare_result/3,
     handle_query_result/3,
     handle_execute_result/3,
@@ -30,6 +31,7 @@
 -import_record(pgc_protocol_message, [row_description_field]).
 
 -record #req{
+    ref :: reference(),
     from :: gen_statem:from(),
     parameters :: pgc_connection_statem_extended_query:execute_parameters(),
     row_format :: row_format(),
@@ -83,7 +85,8 @@ Postgres as-is (in text format), rather than encoded from arbitrary Erlang terms
 -type row_format() :: map | list | tuple | proplist.
 
 -type execute_options() :: #{
-    row => row_format()
+    row => row_format(),
+    timeout => timeout()
 }.
 
 -spec execute(Connection, StatementText, Parameters) -> {ok, Metadata, Rows} | {error, Error} when
@@ -97,6 +100,14 @@ execute(Connection, StatementText, Parameters) ->
     execute(Connection, StatementText, Parameters, #{}).
 
 
+-doc """
+Runs a parameterized statement through parse/bind/execute.
+
+`Options`' `timeout`, if given, bounds only the wait for a reply -- on expiry, the query
+is cancelled on the server (a `CancelRequest`, per the wire protocol) rather than left to
+run to completion unattended, and this exits the same way any other timed-out
+`gen_statem:call/3` does (`exit({timeout, _})`).
+""".
 -spec execute(Connection, StatementText, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
     Connection :: pgc_connection:connection_ref(),
     StatementText :: unicode:chardata(),
@@ -107,7 +118,15 @@ execute(Connection, StatementText, Parameters) ->
     Error :: pgc_protocol_message:error_response_fields().
 execute(Connection, StatementText, Parameters, Options) ->
     RowFormat = maps:get(row, Options, map),
-    pgc_connection:call(Connection, {execute, StatementText, Parameters, RowFormat}, infinity).
+    Timeout = maps:get(timeout, Options, infinity),
+    Ref = erlang:make_ref(),
+    try
+        pgc_connection:call(Connection, {execute, Ref, StatementText, Parameters, RowFormat}, Timeout)
+    catch
+        exit:{timeout, _} = Reason ->
+            ok = pgc_connection:cast(Connection, {cancel, Ref}),
+            exit(Reason)
+    end.
 
 
 -doc """
@@ -121,7 +140,8 @@ Used internally for `commit`, `rollback` and `start transaction`.
     Rows :: [term()],
     Error :: pgc_protocol_message:error_response_fields().
 execute_simple(Connection, StatementText) ->
-    pgc_connection:call(Connection, {execute, StatementText}, infinity).
+    Ref = erlang:make_ref(),
+    pgc_connection:call(Connection, {query, Ref, StatementText}, infinity).
 
 
 -type transaction_options() :: #{
@@ -217,24 +237,34 @@ init([]) ->
     {ok, #state{pending = []}}.
 
 -doc false.
-handle_call(_ConnectionInfo, {execute, StatementText, Parameters, RowFormat}, From, State) ->
+handle_call(_ConnectionInfo, {execute, Ref, StatementText, Parameters, RowFormat}, From, State) ->
     #state{pending = Pending} = State,
     Req = #req{
+        ref = Ref,
         from = From,
         parameters = [{text, Parameter} || Parameter <- Parameters],
         row_format = RowFormat,
         rows = []
     },
     {[{prepare, ~"", StatementText}], State#state{pending = Pending ++ [Req]}};
-handle_call(_ConnectionInfo, {execute, StatementText}, From, State) ->
+handle_call(_ConnectionInfo, {query, Ref, StatementText}, From, State) ->
     #state{pending = Pending} = State,
     Req = #req{
+        ref = Ref,
         from = From,
         parameters = [],
         row_format = map,
         rows = []
     },
     {[{query, StatementText}], State#state{pending = Pending ++ [Req]}}.
+
+-doc false.
+handle_cast(_ConnectionInfo, {cancel, Ref}, State) ->
+    #state{pending = Pending} = State,
+    case Pending of
+        [#req{ref = Ref} | _] -> {[cancel], State};
+        _ -> {[], State}
+    end.
 
 -doc false.
 handle_prepare_result(_ConnectionInfo, {ok, Name, _StatementDescription}, State) ->
