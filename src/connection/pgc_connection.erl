@@ -152,9 +152,10 @@ The connection is about to stop. No further callbacks follow.
 
 -type action() ::
     {query, Text :: unicode:chardata()}
-    % | {query, Text :: unicode:chardata(), Params :: [iodata() | null], Options :: query_options()}
+    | {prepare, Name :: unicode:chardata(), Text :: unicode:chardata()}
+    | {unprepare, Name :: unicode:chardata()}
+    | {execute, Name :: unicode:chardata(), Parameters :: pgc_connection_statem_extended_query:execute_parameters(), Options :: pgc_connection_statem_extended_query:execute_options()}
     | {reply, gen_statem:from(), Reply :: term()}.
-% -type query_options() :: #{}.
 
 
 % -----------------------------------------------------------------------------

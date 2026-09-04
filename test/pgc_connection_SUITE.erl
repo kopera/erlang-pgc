@@ -22,7 +22,11 @@
     listen_notify_test/1,
     overlapping_query_casts_are_queued_test/1,
     invalid_handler_action_crashes_test/1,
-    deferred_reply_test/1
+    deferred_reply_test/1,
+    prepare_and_execute_test/1,
+    unprepare_test/1,
+    prepare_error_is_not_fatal_test/1,
+    chained_actions_from_one_callback_test/1
 ]).
 
 -behaviour(pgc_connection).
@@ -33,6 +37,9 @@
     handle_notification/5,
     handle_row_data/4,
     handle_query_result/3,
+    handle_prepare_result/3,
+    handle_unprepare_result/3,
+    handle_execute_result/3,
     handle_call/4,
     handle_cast/3,
     handle_info/3,
@@ -113,7 +120,11 @@ groups() ->
             listen_notify_test,
             overlapping_query_casts_are_queued_test,
             invalid_handler_action_crashes_test,
-            deferred_reply_test
+            deferred_reply_test,
+            prepare_and_execute_test,
+            unprepare_test,
+            prepare_error_is_not_fatal_test,
+            chained_actions_from_one_callback_test
         ]}
     ].
 
@@ -362,6 +373,111 @@ deferred_reply_test(Config) ->
 
     ok = pgc_connection:stop(Connection).
 
+prepare_and_execute_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    ok = gen_statem:cast(Connection, {prepare, ~"s1", "select $1::int4 as n"}),
+    receive
+        {handler, prepared, {ok, ~"s1", Description}} ->
+            ?assertMatch(
+                #{parameters_description := [_], row_description := [#pgc_protocol_message:row_description_field{name = <<"n">>}]},
+                Description
+            )
+    after 5000 ->
+        ct:fail(no_prepared)
+    end,
+
+    ok = gen_statem:cast(Connection, {execute, ~"s1", [{text, <<"42">>}], #{}}),
+    receive {handler, row, _Fields, [<<"42">>]} -> ok after 5000 -> ct:fail(no_row) end,
+    receive {handler, executed, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_executed) end,
+
+    ok = pgc_connection:stop(Connection).
+
+unprepare_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    ok = gen_statem:cast(Connection, {prepare, ~"s1", "select 1 as n"}),
+    receive {handler, prepared, {ok, ~"s1", _}} -> ok after 5000 -> ct:fail(no_prepared) end,
+
+    ok = gen_statem:cast(Connection, {execute, ~"s1", [], #{}}),
+    receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row) end,
+    receive {handler, executed, {ok, _}} -> ok after 5000 -> ct:fail(no_executed) end,
+
+    ok = gen_statem:cast(Connection, {unprepare, ~"s1"}),
+    receive {handler, unprepared, {ok, ~"s1"}} -> ok after 5000 -> ct:fail(no_unprepared) end,
+
+    % The statement is gone -- executing it again fails at Bind time (invalid_sql_statement_name),
+    % but the connection itself stays healthy.
+    ok = gen_statem:cast(Connection, {execute, ~"s1", [], #{}}),
+    receive
+        {handler, executed, {error, Error}} ->
+            ?assertMatch(#{code := <<"26000">>}, Error)
+    after 5000 ->
+        ct:fail(no_error)
+    end,
+    ?assert(is_process_alive(Connection)),
+
+    ok = pgc_connection:stop(Connection).
+
+prepare_error_is_not_fatal_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    % Same "no separate error callback" shape as `handle_query_result/3` -- a failed
+    % `Parse` reaches the handler as `handle_prepare_result/3`'s `{error, Fields}`.
+    ok = gen_statem:cast(Connection, {prepare, ~"bad", "not valid sql"}),
+    receive
+        {handler, prepared, {error, Error}} ->
+            ?assertMatch(#{code := <<"42601">>}, Error)
+    after 5000 ->
+        ct:fail(no_error)
+    end,
+    ?assert(is_process_alive(Connection)),
+
+    % Not fatal -- the connection is still usable afterward.
+    ok = gen_statem:cast(Connection, {query, "select 1"}),
+    receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row) end,
+
+    ok = pgc_connection:stop(Connection).
+
+chained_actions_from_one_callback_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    ok = gen_statem:cast(Connection, {prepare, ~"s1", "select 1 as n"}),
+    receive {handler, prepared, {ok, ~"s1", _}} -> ok after 5000 -> ct:fail(no_prepared) end,
+
+    % One handler return chains three primitives -- unprepare, re-prepare under the
+    % same name with a different statement, execute the new definition -- with no
+    % batching machinery: each is postponed in turn, in order, until the state machine
+    % is back in #s_ready{} for it.
+    ok = gen_statem:cast(Connection, {reprepare, ~"s1", "select 2 as n"}),
+
+    receive {handler, unprepared, {ok, ~"s1"}} -> ok after 5000 -> ct:fail(no_unprepared) end,
+    receive {handler, prepared, {ok, ~"s1", _}} -> ok after 5000 -> ct:fail(no_prepared_2) end,
+    receive {handler, row, _, [<<"2">>]} -> ok after 5000 -> ct:fail(no_row) end,
+    receive {handler, executed, {ok, _}} -> ok after 5000 -> ct:fail(no_executed) end,
+
+    ok = pgc_connection:stop(Connection).
+
 
 % ------------------------------------------------------------------------------
 % pgc_connection handler callbacks
@@ -408,6 +524,21 @@ handle_query_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
     {[], {TestPid, Pending}}.
 
 -doc false.
+handle_prepare_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+    TestPid ! {handler, prepared, Result},
+    {[], {TestPid, Pending}}.
+
+-doc false.
+handle_unprepare_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+    TestPid ! {handler, unprepared, Result},
+    {[], {TestPid, Pending}}.
+
+-doc false.
+handle_execute_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+    TestPid ! {handler, executed, Result},
+    {[], {TestPid, Pending}}.
+
+-doc false.
 handle_call(_ConnectionInfo, defer_reply, From, {TestPid, _Pending}) ->
     {[], {TestPid, From}};
 handle_call(_ConnectionInfo, boom, _From, {TestPid, Pending}) ->
@@ -423,7 +554,18 @@ handle_cast(_ConnectionInfo, {query, Sql}, {TestPid, Pending}) ->
     % No need to check phase/readiness first -- a `{query, _}` action that arrives
     % while a statement is already in flight is postponed automatically by
     % `pgc_connection_statem_common` until the connection is back in `#s_ready{}`.
-    {[{query, Sql}], {TestPid, Pending}}.
+    {[{query, Sql}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {prepare, Name, Text}, {TestPid, Pending}) ->
+    {[{prepare, Name, Text}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {unprepare, Name}, {TestPid, Pending}) ->
+    {[{unprepare, Name}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {execute, Name, Parameters, Options}, {TestPid, Pending}) ->
+    {[{execute, Name, Parameters, Options}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {reprepare, Name, NewText}, {TestPid, Pending}) ->
+    % `chained_actions_from_one_callback_test`'s own trigger -- one callback return
+    % batches three primitives, chained purely via the ordinary postpone-until-ready
+    % mechanism, no extra wiring needed on either side.
+    {[{unprepare, Name}, {prepare, Name, NewText}, {execute, Name, [], #{}}], {TestPid, Pending}}.
 
 -doc false.
 handle_info(_ConnectionInfo, _Info, {TestPid, Pending}) ->

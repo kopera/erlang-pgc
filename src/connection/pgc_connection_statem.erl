@@ -21,8 +21,10 @@
 -export_record([
     send,
     callback,
-    query
-    % extended_query
+    query,
+    prepare,
+    unprepare,
+    execute
 ]).
 
 % -----------------------------------------------------------------------------
@@ -108,6 +110,21 @@
 
 -record #query{
     text :: unicode:chardata()
+}.
+
+-record #prepare{
+    name :: unicode:chardata(),
+    text :: unicode:chardata()
+}.
+
+-record #unprepare{
+    name :: unicode:chardata()
+}.
+
+-record #execute{
+    name :: unicode:chardata(),
+    parameters :: pgc_connection_statem_extended_query:execute_parameters(),
+    options :: pgc_connection_statem_extended_query:execute_options()
 }.
 
 % ------------------------------------------------------------------------------
@@ -245,6 +262,15 @@ handle_event(internal, #query{} = Query, #s_ready{}, ConnectionData) ->
         text = QueryText
     } = Query,
     pgc_connection_statem_simple_query:enter(QueryText, ConnectionData);
+
+handle_event(internal, #prepare{name = Name, text = Text}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_extended_query:prepare(Name, Text, ConnectionData);
+
+handle_event(internal, #unprepare{name = Name}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_extended_query:unprepare(Name, ConnectionData);
+
+handle_event(internal, #execute{name = Name, parameters = Parameters, options = Options}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_extended_query:execute(Name, Parameters, Options, ConnectionData);
 
 handle_event(internal, #pgc_protocol_message:ready_for_query{status = Status}, #s_ready{}, ConnectionData) ->
     {next_state, #s_ready{status = Status}, ConnectionData};

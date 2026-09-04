@@ -47,7 +47,7 @@
 
 -type statement_name() :: unicode:chardata().
 -type statement_text() :: unicode:chardata().
--type execute_parameters() :: [{text | binary, iodata()}].
+-type execute_parameters() :: [{binary | text, iodata() | null}].
 -type execute_options() :: #{
     result_format => text | binary | nonempty_list(text | binary)
 }.
