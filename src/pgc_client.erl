@@ -36,10 +36,16 @@
     refreshing_types :: boolean()
 }.
 
+-record #cached_statement{
+    hash :: binary(),
+    parameters_description :: [pgc_protocol:oid()],
+    row_description :: [pgc_protocol_message:row_description_field()]
+}.
+
 -record #state{
     types :: pgc_client_types:t(),
     pending :: #{reference() => #req{}},
-    prepared :: #{unicode:unicode_binary() => binary()}
+    prepared :: #{unicode:unicode_binary() => #cached_statement{}}
 }.
 
 % -----------------------------------------------------------------------------
@@ -145,8 +151,7 @@ cancels the query on the server; see `execute/4` for `Options`' `timeout` semant
     Error :: execute_error().
 execute(Connection, StatementText, Parameters, Fun, Acc, Options) ->
     Timeout = maps:get(timeout, Options, infinity),
-    Cache = maps:get(cache, Options, false),
-    request(Connection, {execute, StatementText, Parameters, Cache}, Fun, Acc, Timeout).
+    request(Connection, {execute, StatementText, Parameters, Options}, Fun, Acc, Timeout).
 
 
 -doc """
@@ -294,7 +299,7 @@ init([]) ->
 
 
 -doc false.
-handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters, Cache}}, #state{} = State) ->
+handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters, Options}}, #state{} = State) ->
     #state{pending = Pending, prepared = Prepared} = State,
     Req = #req{
         ref = Ref,
@@ -303,23 +308,26 @@ handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters,
         refreshing_types = false
     },
     NewState = State#state{pending = Pending#{Ref => Req}},
-    case Cache of
+    case maps:get(cache, Options, false) of
         false ->
             {[{prepare, Ref, ~"", StatementText}], NewState};
         {true, Key} ->
             Name = cache_statement_name(Key),
             Hash = statement_hash(StatementText),
             case Prepared of
-                #{Name := Hash} ->
+                #{Name := #cached_statement{hash = Hash}} ->
                     % Already prepared under this name with this exact text -- skip straight
                     % to execute, no parse/describe round-trip needed.
                     {[{execute, Ref, Name, Req#req.parameters, #{}}], NewState};
-                #{Name := _OtherHash} ->
-                    % Same cache key, different statement text -- the old prepared statement
-                    % must be closed before the name can be reused. Drop it from the cache now
-                    % rather than after confirmation: Close always succeeds at the wire level,
-                    % and nothing else can run concurrently to observe the stale entry.
-                    {[{unprepare, Ref, Name}], NewState#state{prepared = maps:remove(Name, Prepared)}};
+                #{Name := #cached_statement{}} ->
+                    % Same cache key, different statement text (the exact-hash pattern above
+                    % already failed to match) -- the old prepared statement must be closed
+                    % before the name can be reused. Leave `prepared` untouched here: if a
+                    % cancel lands before Postgres processes the Close, the old statement is
+                    % still there, and this entry is still an accurate description of what's
+                    % on the wire under Name -- handle_unprepare_result/4 is what actually
+                    % knows whether the Close happened.
+                    {[{unprepare, Ref, Name}], NewState};
                 #{} ->
                     {[{prepare, Ref, Name, StatementText}], NewState}
             end
@@ -351,7 +359,12 @@ handle_prepare_result(_ConnectionInfo, Ref, {ok, Name, StatementDescription}, St
     NeededOids = ParameterOids ++ [Field#row_description_field.type_oid || Field <- RowFields],
     % The statement now exists on the wire under Name either way -- record it before
     % branching on whether a type refresh has to happen first.
-    NewState = State#state{prepared = Prepared#{Name => statement_hash(Req#req.statement_text)}},
+    CachedStatement = #cached_statement{
+        hash = statement_hash(Req#req.statement_text),
+        parameters_description = ParameterOids,
+        row_description = RowFields
+    },
+    NewState = State#state{prepared = Prepared#{Name => CachedStatement}},
     case lists:all(fun (Oid) -> pgc_client_types:has(Oid, Types) end, NeededOids) of
         true ->
             {[{execute, Ref, Name, Req#req.parameters, #{}}], NewState};
@@ -377,15 +390,20 @@ handle_prepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
 handle_unprepare_result(_ConnectionInfo, Ref, {ok, Name}, State) ->
     % pgc_client only ever unprepares a statement to reclaim its name for a re-prepare with
     % new text (see the cache-collision branch of handle_cast/3 above) -- so this is always
-    % followed by a prepare, never a terminal result on its own.
-    #state{pending = Pending} = State,
+    % followed by a prepare, never a terminal result on its own. The Close is now confirmed,
+    % so the name is genuinely free -- this is the point at which the stale cache entry
+    % actually stops describing reality, not when the unprepare was merely dispatched.
+    #state{pending = Pending, prepared = Prepared} = State,
     #{Ref := Req} = Pending,
-    {[{prepare, Ref, Name, Req#req.statement_text}], State};
+    NewState = State#state{prepared = maps:remove(Name, Prepared)},
+    {[{prepare, Ref, Name, Req#req.statement_text}], NewState};
 
 handle_unprepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
-    % Close itself can't fail -- this only happens if a cancel landed before Postgres got to
-    % it. Abandon the request the same way a cancel during a real execute already does,
-    % rather than assuming success and blindly retrying a prepare nobody's waiting on.
+    % Close didn't actually happen -- a cancel landed before Postgres got to it. The old
+    % statement, if any, is still live on the wire under this name, so `prepared` is left
+    % untouched (it's still an accurate description). Abandon the request the same way a
+    % cancel during a real execute already does, rather than assuming success and blindly
+    % retrying a prepare nobody's waiting on.
     #state{pending = Pending} = State,
     #{Ref := Req} = Pending,
     Req#req.ref ! {done, Req#req.ref, {error, Fields}},
@@ -636,10 +654,15 @@ handle_unprepare_result_cancelled_test() ->
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
     Req = #req{ref = Ref, statement_text = ~"select 1", parameters = [], refreshing_types = false},
-    State = #state{types = pgc_client_types:new(), pending = #{Ref => Req}, prepared = #{}},
+    % The old statement (whatever it was before this collision-driven unprepare was sent) is
+    % still live on the wire since the Close never actually ran -- `prepared` must still
+    % reflect that, not have already dropped it when the unprepare was merely dispatched.
+    Cached = #cached_statement{hash = ~"old-hash", parameters_description = [], row_description = []},
+    State = #state{types = pgc_client_types:new(), pending = #{Ref => Req}, prepared = #{~"my_statement" => Cached}},
     {Actions, NewState} = handle_unprepare_result(#{}, Ref, {error, #{}}, State),
     ?assertEqual([], Actions),
     ?assertEqual(#{}, NewState#state.pending),
+    ?assertEqual(#{~"my_statement" => Cached}, NewState#state.prepared),
     ?assertEqual({done, Ref, {error, #{}}}, receive Message -> Message after 0 -> timeout end),
     erlang:demonitor(Ref, [flush]),
     Standin ! stop.
