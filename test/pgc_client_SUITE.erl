@@ -17,6 +17,7 @@
     execute_error_is_not_fatal_test/1,
     execute_row_formats_test/1,
     execute_timeout_cancels_query_test/1,
+    execute_timeout_during_type_refresh_cancels_test/1,
     execute_streams_rows_test/1,
     execute_halt_cancels_query_test/1,
     execute_resolves_types_across_statements_test/1,
@@ -74,6 +75,7 @@ groups() ->
             execute_error_is_not_fatal_test,
             execute_row_formats_test,
             execute_timeout_cancels_query_test,
+            execute_timeout_during_type_refresh_cancels_test,
             execute_streams_rows_test,
             execute_halt_cancels_query_test,
             execute_resolves_types_across_statements_test,
@@ -131,6 +133,28 @@ execute_timeout_cancels_query_test(Config) ->
 
     % If cancellation actually reached Postgres, the connection is free again almost
     % immediately -- without it, this would block for the remaining ~9.8s of the sleep.
+    {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
+        pgc_client:execute(Connection, "select 1 as n", [])
+    end),
+    ?assert(Time < 2_000_000),
+
+    ok = pgc_client:stop(Connection).
+
+execute_timeout_during_type_refresh_cancels_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % A type this connection has never seen guarantees the next execute goes through the
+    % full miss -> refresh -> reprepare -> execute sequence, not just a plain prepare ->
+    % execute -- the timeout below can land anywhere across that whole sequence (which
+    % stage exactly isn't observable from here), not merely inside a plain execute like
+    % `execute_timeout_cancels_query_test` above.
+    {ok, _, []} = pgc_client:execute(Connection, "create type mood as enum ('sad', 'ok', 'happy')", []),
+    ?assertExit({timeout, _}, pgc_client:execute(Connection, "select pg_sleep(10), 'happy'::mood as m", [], #{timeout => 200})),
+
+    % Whichever stage the cancel actually landed in, the connection must come back fast --
+    % this is exactly the scenario the ref-symmetric redesign (the internal refresh reuses
+    % the caller's own Ref, so a cancel reaches whichever of its actions is on the wire)
+    % exists to make safe.
     {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),

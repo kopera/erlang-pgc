@@ -20,10 +20,10 @@
 -export([
     init/1,
     handle_cast/3,
-    handle_prepare_result/3,
-    handle_query_result/3,
-    handle_execute_result/3,
-    handle_row_data/4
+    handle_prepare_result/4,
+    handle_query_result/4,
+    handle_execute_result/4,
+    handle_row_data/5
 ]).
 
 -import_record(pgc_protocol_message, [row_description_field]).
@@ -31,13 +31,13 @@
 -record #req{
     ref :: reference(),
     statement_text :: unicode:chardata(),
-    parameters :: pgc_connection:execute_parameters()
+    parameters :: pgc_connection:execute_parameters(),
+    refreshing_types :: boolean()
 }.
 
 -record #state{
     types :: pgc_client_types:t(),
-    refreshing_types :: boolean(),
-    pending :: [#req{}]
+    pending :: #{reference() => #req{}}
 }.
 
 % -----------------------------------------------------------------------------
@@ -283,7 +283,7 @@ rollback(Connection, Reason) ->
 
 -doc false.
 init([]) ->
-    {ok, #state{types = pgc_client_types:new(), refreshing_types = false, pending = []}}.
+    {ok, #state{types = pgc_client_types:new(), pending = #{}}}.
 
 
 -doc false.
@@ -292,56 +292,62 @@ handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters}
     Req = #req{
         ref = Ref,
         statement_text = StatementText,
-        parameters = [{text, Parameter} || Parameter <- Parameters]
+        parameters = [{text, Parameter} || Parameter <- Parameters],
+        refreshing_types = false
     },
     {[
-        {prepare, ~"", StatementText}
-    ], State#state{pending = Pending ++ [Req]}};
+        {prepare, Ref, ~"", StatementText}
+    ], State#state{pending = Pending#{Ref => Req}}};
 
 handle_cast(_ConnectionInfo, {request, Ref, {query, StatementText}}, #state{} = State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
         statement_text = StatementText,
-        parameters = []
+        parameters = [],
+        refreshing_types = false
     },
     {[
-        {query, StatementText}
-    ], State#state{pending = Pending ++ [Req]}};
+        {query, Ref, StatementText}
+    ], State#state{pending = Pending#{Ref => Req}}};
 
 handle_cast(_ConnectionInfo, {cancel, Ref}, #state{} = State) ->
-    #state{pending = Pending} = State,
-    case Pending of
-        [#req{ref = Ref} | _] -> {[cancel], State};
-        _ -> {[], State}
-    end.
+    % Whether this actually interrupts anything is pgc_connection's call to make -- it tracks
+    % which Ref is genuinely on the wire, we don't need our own head-of-queue guess here.
+    {[{cancel, Ref}], State}.
 
 
 -doc false.
-handle_prepare_result(_ConnectionInfo, {ok, Name, StatementDescription}, State) ->
-    #state{pending = [Req | Pending], types = Types} = State,
+handle_prepare_result(_ConnectionInfo, Ref, {ok, Name, StatementDescription}, State) ->
+    #state{pending = Pending, types = Types} = State,
+    #{Ref := Req} = Pending,
     #{parameters_description := ParameterOids, row_description := RowFields} = StatementDescription,
     NeededOids = ParameterOids ++ [Field#row_description_field.type_oid || Field <- RowFields],
     case lists:all(fun (Oid) -> pgc_client_types:has(Oid, Types) end, NeededOids) of
         true ->
-            {[{execute, Name, Req#req.parameters, #{}}], State#state{pending = [Req | Pending]}};
+            {[{execute, Ref, Name, Req#req.parameters, #{}}], State};
         false ->
             % Some of the types this statement needs aren't cached yet -- refresh first;
-            % handle_query_result/3 below decides what to do once it's actually done,
+            % handle_query_result/4 below decides what to do once it's actually done,
             % rather than pre-committing to a re-prepare that a cancel can't then stop.
-            {[{query, refresh_statement_text()}],
-                State#state{pending = [Req | Pending], refreshing_types = true}}
+            % Reuses this request's own Ref -- from pgc_connection's point of view the
+            % refresh's `query` action *is* this request's currently in-flight action,
+            % which is what lets a caller's cancel interrupt it.
+            {[{query, Ref, refresh_statement_text()}],
+                State#state{pending = Pending#{Ref => Req#req{refreshing_types = true}}}}
     end;
 
-handle_prepare_result(_ConnectionInfo, {error, Fields}, State) ->
-    #state{pending = [Req | Pending]} = State,
+handle_prepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
+    #state{pending = Pending} = State,
+    #{Ref := Req} = Pending,
     Req#req.ref ! {done, Req#req.ref, {error, Fields}},
-    {[], State#state{pending = Pending}}.
+    {[], State#state{pending = maps:remove(Ref, Pending)}}.
 
 
 -doc false.
-handle_row_data(_ConnectionInfo, RowDescription, Values, State) ->
-    case State#state.refreshing_types of
+handle_row_data(_ConnectionInfo, Ref, RowDescription, Values, State) ->
+    #{Ref := Req} = State#state.pending,
+    case Req#req.refreshing_types of
         true ->
             [Oid, Namespace, Name, Kind, Recv, Send, ElementType, ParentType, FieldNamesArray, FieldTypesArray] = Values,
             TypeId = binary_to_integer(Oid),
@@ -378,39 +384,41 @@ handle_row_data(_ConnectionInfo, RowDescription, Values, State) ->
             }, State#state.types),
             {[], State};
         false ->
-            #state{pending = [Req | _]} = State,
             Req#req.ref ! {row, Req#req.ref, RowDescription, Values},
             {[], State}
     end.
 
 -doc false.
-handle_query_result(ConnectionInfo, Result, State) ->
-    case State#state.refreshing_types of
+handle_query_result(ConnectionInfo, Ref, Result, State) ->
+    #{Ref := Req} = State#state.pending,
+    case Req#req.refreshing_types of
         true ->
-            #state{pending = [Req | Pending]} = State,
-            NewState = State#state{refreshing_types = false},
+            #state{pending = Pending} = State,
             case Result of
                 {ok, _Tag} ->
                     % Refresh actually completed -- now it's safe to retry the prepare
                     % (the unnamed statement doesn't survive the refresh's own Query
                     % message, hence re-preparing rather than resuming the old one).
-                    {[{prepare, ~"", Req#req.statement_text}], NewState};
+                    NewReq = Req#req{refreshing_types = false},
+                    {[{prepare, Ref, ~"", NewReq#req.statement_text}],
+                        State#state{pending = Pending#{Ref => NewReq}}};
                 {error, Fields} ->
                     % Cancelled (or otherwise failed) mid-refresh -- abandon this request
                     % the same way a cancel during a real execute already does, instead of
                     % blindly retrying a prepare nobody's waiting on anymore.
                     Req#req.ref ! {done, Req#req.ref, {error, Fields}},
-                    {[], NewState#state{pending = Pending}}
+                    {[], State#state{pending = maps:remove(Ref, Pending)}}
             end;
         false ->
-            handle_execute_result(ConnectionInfo, Result, State)
+            handle_execute_result(ConnectionInfo, Ref, Result, State)
     end.
 
 -doc false.
-handle_execute_result(_ConnectionInfo, Result, State) ->
-    #state{pending = [Req | Pending]} = State,
+handle_execute_result(_ConnectionInfo, Ref, Result, State) ->
+    #state{pending = Pending} = State,
+    #{Ref := Req} = Pending,
     Req#req.ref ! {done, Req#req.ref, Result},
-    {[], State#state{pending = Pending}}.
+    {[], State#state{pending = maps:remove(Ref, Pending)}}.
 
 
 % -----------------------------------------------------------------------------
@@ -530,16 +538,15 @@ waiting on anymore.
 """.
 handle_query_result_refresh_cancelled_test() ->
     % A plain make_ref/0 isn't a valid send target, and monitoring self() doesn't mint a
-    % working alias either -- mirror `run/5`'s production pattern of monitoring some *other*
+    % working alias either -- mirror `request/5`'s production pattern of monitoring some *other*
     % process, so `Req#req.ref ! Message` has a real alias to deliver into this mailbox.
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
-    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = []},
-    State = #state{types = pgc_client_types:new(), refreshing_types = true, pending = [Req]},
-    {Actions, NewState} = handle_query_result(#{}, {error, #{}}, State),
+    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = [], refreshing_types = true},
+    State = #state{types = pgc_client_types:new(), pending = #{Ref => Req}},
+    {Actions, NewState} = handle_query_result(#{}, Ref, {error, #{}}, State),
     ?assertEqual([], Actions),
-    ?assertEqual(false, NewState#state.refreshing_types),
-    ?assertEqual([], NewState#state.pending),
+    ?assertEqual(#{}, NewState#state.pending),
     ?assertEqual({done, Ref, {error, #{}}}, receive Message -> Message after 0 -> timeout end),
     erlang:demonitor(Ref, [flush]),
     Standin ! stop.
@@ -550,10 +557,9 @@ survive the refresh's own Query message.
 """.
 handle_query_result_refresh_succeeded_test() ->
     Ref = make_ref(),
-    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = []},
-    State = #state{types = pgc_client_types:new(), refreshing_types = true, pending = [Req]},
-    {Actions, NewState} = handle_query_result(#{}, {ok, ~"SELECT 1"}, State),
-    ?assertEqual([{prepare, ~"", ~"select 1"}], Actions),
-    ?assertEqual(false, NewState#state.refreshing_types),
-    ?assertEqual([Req], NewState#state.pending).
+    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = [], refreshing_types = true},
+    State = #state{types = pgc_client_types:new(), pending = #{Ref => Req}},
+    {Actions, NewState} = handle_query_result(#{}, Ref, {ok, ~"SELECT 1"}, State),
+    ?assertEqual([{prepare, Ref, ~"", ~"select 1"}], Actions),
+    ?assertEqual(#{Ref => Req#req{refreshing_types = false}}, NewState#state.pending).
 -endif.

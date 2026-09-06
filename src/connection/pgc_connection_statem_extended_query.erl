@@ -2,9 +2,9 @@
 -moduledoc false.
 
 -export([
-    prepare/3,
-    unprepare/2,
-    execute/4
+    prepare/4,
+    unprepare/3,
+    execute/5
 ]).
 -export_type([
     execute_parameters/0,
@@ -55,16 +55,19 @@
 % States ----------------------------------------------------------------------
 
 -record #s_preparing {
+    ref :: term(),
     name :: statement_name(),
     parameters_description :: [pgc_protocol:oid()],
     row_description :: [pgc_protocol_message:row_description_field()]
 }.
 
 -record #s_unpreparing {
+    ref :: term(),
     name :: statement_name()
 }.
 
 -record #s_executing {
+    ref :: term(),
     name :: statement_name(),
     row_description :: [pgc_protocol_message:row_description_field()]
 }.
@@ -73,13 +76,15 @@
 % API
 % ------------------------------------------------------------------------------
 
--spec prepare(StatementName, StatementText, ConnectionData) -> gen_statem:event_handler_result(#s_preparing{}, ConnectionData) when
+-spec prepare(Ref, StatementName, StatementText, ConnectionData) -> gen_statem:event_handler_result(#s_preparing{}, ConnectionData) when
+    Ref :: term(),
     StatementName :: statement_name(),
     StatementText :: statement_text(),
     ConnectionData :: #data{}.
-prepare(StatementName, StatementText, ConnectionData) ->
+prepare(Ref, StatementName, StatementText, ConnectionData) ->
     {ok, NextState, NextData, Actions} = init({
         prepare,
+        Ref,
         StatementName,
         StatementText,
         ConnectionData
@@ -88,12 +93,14 @@ prepare(StatementName, StatementText, ConnectionData) ->
         {change_callback_module, ?MODULE} | Actions
     ]}.
 
--spec unprepare(StatementName, ConnectionData) -> gen_statem:event_handler_result(#s_unpreparing{}, ConnectionData) when
+-spec unprepare(Ref, StatementName, ConnectionData) -> gen_statem:event_handler_result(#s_unpreparing{}, ConnectionData) when
+    Ref :: term(),
     StatementName :: statement_name(),
     ConnectionData :: #data{}.
-unprepare(StatementName, ConnectionData) ->
+unprepare(Ref, StatementName, ConnectionData) ->
     {ok, NextState, NextData, Actions} = init({
         unprepare,
+        Ref,
         StatementName,
         ConnectionData
     }),
@@ -101,14 +108,16 @@ unprepare(StatementName, ConnectionData) ->
         {change_callback_module, ?MODULE} | Actions
     ]}.
 
--spec execute(StatementName, Parameters, Options, ConnectionData) -> gen_statem:event_handler_result(#s_executing{}, ConnectionData) when
+-spec execute(Ref, StatementName, Parameters, Options, ConnectionData) -> gen_statem:event_handler_result(#s_executing{}, ConnectionData) when
+    Ref :: term(),
     StatementName :: statement_name(),
     Parameters :: execute_parameters(),
     Options :: execute_options(),
     ConnectionData :: #data{}.
-execute(StatementName, Parameters, Options, ConnectionData) ->
+execute(Ref, StatementName, Parameters, Options, ConnectionData) ->
     {ok, NextState, NextData, Actions} = init({
         execute,
+        Ref,
         StatementName,
         Parameters,
         Options,
@@ -124,11 +133,12 @@ execute(StatementName, Parameters, Options, ConnectionData) ->
 % ------------------------------------------------------------------------------
 
 -spec init
-    ({prepare, statement_name(), statement_text(), #data{}}) -> {ok, #s_preparing{}, #data{}, [gen_statem:action()]};
-    ({unprepare, statement_name(), #data{}}) -> {ok, #s_unpreparing{}, #data{}, [gen_statem:action()]};
-    ({execute, statement_name(), execute_parameters(), execute_options(), #data{}}) -> {ok, #s_executing{}, #data{}, [gen_statem:action()]}.
-init({prepare, StatementName, StatementText, ConnectionData}) ->
+    ({prepare, term(), statement_name(), statement_text(), #data{}}) -> {ok, #s_preparing{}, #data{}, [gen_statem:action()]};
+    ({unprepare, term(), statement_name(), #data{}}) -> {ok, #s_unpreparing{}, #data{}, [gen_statem:action()]};
+    ({execute, term(), statement_name(), execute_parameters(), execute_options(), #data{}}) -> {ok, #s_executing{}, #data{}, [gen_statem:action()]}.
+init({prepare, Ref, StatementName, StatementText, ConnectionData}) ->
     {ok, #s_preparing{
+        ref = Ref,
         name = StatementName,
         parameters_description = [],
         row_description = []
@@ -141,8 +151,9 @@ init({prepare, StatementName, StatementText, ConnectionData}) ->
             ]
         }}
     ]};
-init({unprepare, StatementName, ConnectionData}) ->
+init({unprepare, Ref, StatementName, ConnectionData}) ->
     {ok, #s_unpreparing{
+        ref = Ref,
         name = StatementName
     }, ConnectionData, [
         {next_event, internal, #send{
@@ -152,7 +163,7 @@ init({unprepare, StatementName, ConnectionData}) ->
             ]
         }}
     ]};
-init({execute, StatementName, ExecuteParameters, ExecuteOptions, ConnectionData}) ->
+init({execute, Ref, StatementName, ExecuteParameters, ExecuteOptions, ConnectionData}) ->
     ResultFormat = case ExecuteOptions of
         #{result_format := binary} -> [binary];
         #{result_format := text} -> [text];
@@ -161,6 +172,7 @@ init({execute, StatementName, ExecuteParameters, ExecuteOptions, ConnectionData}
     end,
 
     {ok, #s_executing{
+        ref = Ref,
         name = StatementName,
         row_description = []
     }, ConnectionData, [
@@ -203,6 +215,7 @@ handle_event(internal, #parameter_description{types = Types}, #s_preparing{} = S
 
 handle_event(internal, #row_description{fields = Fields}, #s_preparing{} = State, ConnectionData) ->
     #s_preparing{
+        ref = Ref,
         name = Name,
         parameters_description = Parameters
     } = State,
@@ -212,12 +225,13 @@ handle_event(internal, #row_description{fields = Fields}, #s_preparing{} = State
     },
     {next_state, State#s_preparing{row_description = Fields}, ConnectionData, [
         {next_event, internal, #callback{
-            name = handle_prepare_result, args = [{ok, Name, StatementDescription}]
+            name = handle_prepare_result, args = [Ref, {ok, Name, StatementDescription}]
         }}
     ]};
 
 handle_event(internal, #no_data{}, #s_preparing{} = State, _ConnectionData) ->
     #s_preparing{
+        ref = Ref,
         name = Name,
         parameters_description = Parameters
     } = State,
@@ -227,14 +241,14 @@ handle_event(internal, #no_data{}, #s_preparing{} = State, _ConnectionData) ->
     },
     {keep_state_and_data, [
         {next_event, internal, #callback{
-            name = handle_prepare_result, args = [{ok, Name, StatementDescription}]
+            name = handle_prepare_result, args = [Ref, {ok, Name, StatementDescription}]
         }}
     ]};
 
-handle_event(internal, #error_response{fields = Fields}, #s_preparing{} = _State, _ConnectionData) ->
+handle_event(internal, #error_response{fields = Fields}, #s_preparing{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
         {next_event, internal, #callback{
-            name = handle_prepare_result, args = [{error, Fields}]
+            name = handle_prepare_result, args = [Ref, {error, Fields}]
         }}
     ]};
 
@@ -247,11 +261,12 @@ handle_event(internal, #ready_for_query{status = Status}, #s_preparing{} = _Stat
 
 handle_event(internal, #close_complete{}, #s_unpreparing{} = State, _ConnectionData) ->
     #s_unpreparing{
+        ref = Ref,
         name = Name
     } = State,
     {keep_state_and_data, [
         {next_event, internal, #callback{
-            name = handle_unprepare_result, args = [{ok, Name}]
+            name = handle_unprepare_result, args = [Ref, {ok, Name}]
         }}
     ]};
 
@@ -273,25 +288,26 @@ handle_event(internal, #no_data{}, #s_executing{} = _State, _ConnectionData) ->
 
 handle_event(internal, #data_row{values = Values}, #s_executing{} = State, _ConnectionData) ->
     #s_executing{
+        ref = Ref,
         row_description = RowDescription
     } = State,
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_row_data, args = [RowDescription, Values]}}
+        {next_event, internal, #callback{name = handle_row_data, args = [Ref, RowDescription, Values]}}
     ]};
 
-handle_event(internal, #command_complete{tag = Tag}, #s_executing{} = _State, _ConnectionData) ->
+handle_event(internal, #command_complete{tag = Tag}, #s_executing{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_execute_result, args = [{ok, Tag}]}}
+        {next_event, internal, #callback{name = handle_execute_result, args = [Ref, {ok, Tag}]}}
     ]};
 
-handle_event(internal, #empty_query_response{}, #s_executing{} = _State, _ConnectionData) ->
+handle_event(internal, #empty_query_response{}, #s_executing{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_execute_result, args = [empty]}}
+        {next_event, internal, #callback{name = handle_execute_result, args = [Ref, empty]}}
     ]};
 
-handle_event(internal, #error_response{fields = Fields}, #s_executing{}, _ConnectionData) ->
+handle_event(internal, #error_response{fields = Fields}, #s_executing{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_execute_result, args = [{error, Fields}]}}
+        {next_event, internal, #callback{name = handle_execute_result, args = [Ref, {error, Fields}]}}
     ]};
 
 handle_event(internal, #ready_for_query{status = Status}, #s_executing{} = _State, ConnectionData) ->

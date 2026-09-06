@@ -67,6 +67,8 @@
     backend_key :: {non_neg_integer(), binary()} | undefined,
     backend_parameters :: #{binary() => binary()},
 
+    current_ref :: term() | undefined,
+
     handler_module :: module(),
     handler_state :: term()
 }.
@@ -110,25 +112,30 @@
 }.
 
 -record #query{
+    ref :: term(),
     text :: unicode:chardata()
 }.
 
 -record #prepare{
+    ref :: term(),
     name :: unicode:chardata(),
     text :: unicode:chardata()
 }.
 
 -record #unprepare{
+    ref :: term(),
     name :: unicode:chardata()
 }.
 
 -record #execute{
+    ref :: term(),
     name :: unicode:chardata(),
     parameters :: pgc_connection_statem_extended_query:execute_parameters(),
     options :: pgc_connection_statem_extended_query:execute_options()
 }.
 
 -record #cancel{
+    ref :: term()
 }.
 
 % ------------------------------------------------------------------------------
@@ -139,7 +146,7 @@
     Status :: idle | transaction | error,
     ConnectionData :: #data{}.
 ready(Status, ConnectionData) ->
-    {next_state, #s_ready{status = Status}, ConnectionData, [
+    {next_state, #s_ready{status = Status}, ConnectionData#data{current_ref = undefined}, [
         {change_callback_module, ?MODULE},
         {next_event, internal, #callback{name = handle_ready, args = []}}
     ]}.
@@ -188,6 +195,8 @@ init(#args{
 
         backend_key = undefined,
         backend_parameters = #{},
+
+        current_ref = undefined,
 
         handler_module = HandlerModule,
         handler_state = HandlerState
@@ -261,20 +270,17 @@ handle_event(state_timeout, ping, #s_ready{status = Status}, ConnectionData) ->
         ]}}
     ]};
 
-handle_event(internal, #query{} = Query, #s_ready{}, ConnectionData) ->
-    #query{
-        text = QueryText
-    } = Query,
-    pgc_connection_statem_simple_query:enter(QueryText, ConnectionData);
+handle_event(internal, #query{ref = Ref, text = QueryText}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_simple_query:enter(Ref, QueryText, ConnectionData#data{current_ref = Ref});
 
-handle_event(internal, #prepare{name = Name, text = Text}, #s_ready{}, ConnectionData) ->
-    pgc_connection_statem_extended_query:prepare(Name, Text, ConnectionData);
+handle_event(internal, #prepare{ref = Ref, name = Name, text = Text}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_extended_query:prepare(Ref, Name, Text, ConnectionData#data{current_ref = Ref});
 
-handle_event(internal, #unprepare{name = Name}, #s_ready{}, ConnectionData) ->
-    pgc_connection_statem_extended_query:unprepare(Name, ConnectionData);
+handle_event(internal, #unprepare{ref = Ref, name = Name}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_extended_query:unprepare(Ref, Name, ConnectionData#data{current_ref = Ref});
 
-handle_event(internal, #execute{name = Name, parameters = Parameters, options = Options}, #s_ready{}, ConnectionData) ->
-    pgc_connection_statem_extended_query:execute(Name, Parameters, Options, ConnectionData);
+handle_event(internal, #execute{ref = Ref, name = Name, parameters = Parameters, options = Options}, #s_ready{}, ConnectionData) ->
+    pgc_connection_statem_extended_query:execute(Ref, Name, Parameters, Options, ConnectionData#data{current_ref = Ref});
 
 handle_event(internal, #pgc_protocol_message:ready_for_query{status = Status}, #s_ready{}, ConnectionData) ->
     {next_state, #s_ready{status = Status}, ConnectionData};

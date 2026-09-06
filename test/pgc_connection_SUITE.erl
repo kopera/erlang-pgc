@@ -35,11 +35,11 @@
     handle_ready/2,
     handle_notice/3,
     handle_notification/5,
-    handle_row_data/4,
-    handle_query_result/3,
-    handle_prepare_result/3,
-    handle_unprepare_result/3,
-    handle_execute_result/3,
+    handle_row_data/5,
+    handle_query_result/4,
+    handle_prepare_result/4,
+    handle_unprepare_result/4,
+    handle_execute_result/4,
     handle_call/4,
     handle_cast/3,
     handle_info/3,
@@ -197,7 +197,7 @@ select_rows_test(Config) ->
         ct:fail(no_ready_event)
     end,
 
-    ok = gen_statem:cast(Connection, {query, "select 42 as answer, 'hi' as greeting"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 42 as answer, 'hi' as greeting"}),
     receive
         {handler, row, Fields, Values} ->
             ?assertMatch(
@@ -225,14 +225,14 @@ multi_statement_query_test(Config) ->
         ct:fail(no_ready_event)
     end,
 
-    ok = gen_statem:cast(Connection, {query, "select 1; select 2"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 1; select 2"}),
     receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row_1) end,
     receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_1) end,
     receive {handler, row, _, [<<"2">>]} -> ok after 5000 -> ct:fail(no_row_2) end,
     receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_2) end,
 
     % Back in #s_ready{} -- prove the connection is still usable.
-    ok = gen_statem:cast(Connection, {query, "select 3"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 3"}),
     receive {handler, row, _, [<<"3">>]} -> ok after 5000 -> ct:fail(no_row_3) end,
 
     ok = pgc_connection:stop(Connection).
@@ -246,9 +246,9 @@ invalid_statement_is_not_fatal_test(Config) ->
     end,
 
     % There's no separate "error" callback -- a statement-level `ErrorResponse` reaches
-    % the handler as `handle_query_result/3`'s `{error, Fields}`, the same callback a
+    % the handler as `handle_query_result/4`'s `{error, Fields}`, the same callback a
     % successful `{ok, Tag}` goes through.
-    ok = gen_statem:cast(Connection, {query, "select * from this_table_does_not_exist"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select * from this_table_does_not_exist"}),
     receive
         {handler, result, {error, Error}} ->
             ?assertMatch(#{code := <<"42P01">>}, Error)
@@ -258,7 +258,7 @@ invalid_statement_is_not_fatal_test(Config) ->
     ?assert(is_process_alive(Connection)),
 
     % Not fatal -- the connection is still usable afterward.
-    ok = gen_statem:cast(Connection, {query, "select 1"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 1"}),
     receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row) end,
 
     ok = pgc_connection:stop(Connection).
@@ -270,7 +270,7 @@ listen_notify_test(Config) ->
     after 5000 ->
         ct:fail(no_ready_event)
     end,
-    ok = gen_statem:cast(Listener, {query, "listen pgc_test_channel"}),
+    ok = gen_statem:cast(Listener, {query, make_ref(), "listen pgc_test_channel"}),
     receive
         {handler, result, {ok, <<"LISTEN">>}} -> ok
     after 5000 ->
@@ -283,7 +283,7 @@ listen_notify_test(Config) ->
     after 5000 ->
         ct:fail(no_ready_event)
     end,
-    ok = gen_statem:cast(Notifier, {query, "notify pgc_test_channel, 'hello'"}),
+    ok = gen_statem:cast(Notifier, {query, make_ref(), "notify pgc_test_channel, 'hello'"}),
 
     receive
         {handler, notification, <<"pgc_test_channel">>, <<"hello">>, SenderId} ->
@@ -309,8 +309,8 @@ overlapping_query_casts_are_queued_test(Config) ->
     % `#s_ready{}`, so the second query automatically waits its turn once the state
     % machine leaves `#s_simple_query{}`. The handler doesn't have to track phase or
     % postpone anything itself.
-    ok = gen_statem:cast(Connection, {query, "select pg_sleep(0.2)"}),
-    ok = gen_statem:cast(Connection, {query, "select 42 as answer"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select pg_sleep(0.2)"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 42 as answer"}),
 
     receive {handler, row, _, [<<>>]} -> ok after 5000 -> ct:fail(no_row_1) end,
     receive {handler, result, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_result_1) end,
@@ -363,7 +363,7 @@ deferred_reply_test(Config) ->
     TestPid = self(),
     spawn(fun () -> TestPid ! {deferred_reply, gen_statem:call(Connection, defer_reply, infinity)} end),
     timer:sleep(100),
-    ok = gen_statem:cast(Connection, {query, "do $$ begin raise notice 'ping'; end $$"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "do $$ begin raise notice 'ping'; end $$"}),
 
     receive
         {deferred_reply, ok} -> ok
@@ -381,7 +381,7 @@ prepare_and_execute_test(Config) ->
         ct:fail(no_ready_event)
     end,
 
-    ok = gen_statem:cast(Connection, {prepare, ~"s1", "select $1::int4 as n"}),
+    ok = gen_statem:cast(Connection, {prepare, make_ref(), ~"s1", "select $1::int4 as n"}),
     receive
         {handler, prepared, {ok, ~"s1", Description}} ->
             ?assertMatch(
@@ -392,7 +392,7 @@ prepare_and_execute_test(Config) ->
         ct:fail(no_prepared)
     end,
 
-    ok = gen_statem:cast(Connection, {execute, ~"s1", [{text, <<"42">>}], #{}}),
+    ok = gen_statem:cast(Connection, {execute, make_ref(), ~"s1", [{text, <<"42">>}], #{}}),
     receive {handler, row, _Fields, [<<"42">>]} -> ok after 5000 -> ct:fail(no_row) end,
     receive {handler, executed, {ok, <<"SELECT 1">>}} -> ok after 5000 -> ct:fail(no_executed) end,
 
@@ -406,19 +406,19 @@ unprepare_test(Config) ->
         ct:fail(no_ready_event)
     end,
 
-    ok = gen_statem:cast(Connection, {prepare, ~"s1", "select 1 as n"}),
+    ok = gen_statem:cast(Connection, {prepare, make_ref(), ~"s1", "select 1 as n"}),
     receive {handler, prepared, {ok, ~"s1", _}} -> ok after 5000 -> ct:fail(no_prepared) end,
 
-    ok = gen_statem:cast(Connection, {execute, ~"s1", [], #{}}),
+    ok = gen_statem:cast(Connection, {execute, make_ref(), ~"s1", [], #{}}),
     receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row) end,
     receive {handler, executed, {ok, _}} -> ok after 5000 -> ct:fail(no_executed) end,
 
-    ok = gen_statem:cast(Connection, {unprepare, ~"s1"}),
+    ok = gen_statem:cast(Connection, {unprepare, make_ref(), ~"s1"}),
     receive {handler, unprepared, {ok, ~"s1"}} -> ok after 5000 -> ct:fail(no_unprepared) end,
 
     % The statement is gone -- executing it again fails at Bind time (invalid_sql_statement_name),
     % but the connection itself stays healthy.
-    ok = gen_statem:cast(Connection, {execute, ~"s1", [], #{}}),
+    ok = gen_statem:cast(Connection, {execute, make_ref(), ~"s1", [], #{}}),
     receive
         {handler, executed, {error, Error}} ->
             ?assertMatch(#{code := <<"26000">>}, Error)
@@ -437,9 +437,9 @@ prepare_error_is_not_fatal_test(Config) ->
         ct:fail(no_ready_event)
     end,
 
-    % Same "no separate error callback" shape as `handle_query_result/3` -- a failed
-    % `Parse` reaches the handler as `handle_prepare_result/3`'s `{error, Fields}`.
-    ok = gen_statem:cast(Connection, {prepare, ~"bad", "not valid sql"}),
+    % Same "no separate error callback" shape as `handle_query_result/4` -- a failed
+    % `Parse` reaches the handler as `handle_prepare_result/4`'s `{error, Fields}`.
+    ok = gen_statem:cast(Connection, {prepare, make_ref(), ~"bad", "not valid sql"}),
     receive
         {handler, prepared, {error, Error}} ->
             ?assertMatch(#{code := <<"42601">>}, Error)
@@ -449,7 +449,7 @@ prepare_error_is_not_fatal_test(Config) ->
     ?assert(is_process_alive(Connection)),
 
     % Not fatal -- the connection is still usable afterward.
-    ok = gen_statem:cast(Connection, {query, "select 1"}),
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 1"}),
     receive {handler, row, _, [<<"1">>]} -> ok after 5000 -> ct:fail(no_row) end,
 
     ok = pgc_connection:stop(Connection).
@@ -462,7 +462,7 @@ chained_actions_from_one_callback_test(Config) ->
         ct:fail(no_ready_event)
     end,
 
-    ok = gen_statem:cast(Connection, {prepare, ~"s1", "select 1 as n"}),
+    ok = gen_statem:cast(Connection, {prepare, make_ref(), ~"s1", "select 1 as n"}),
     receive {handler, prepared, {ok, ~"s1", _}} -> ok after 5000 -> ct:fail(no_prepared) end,
 
     % One handler return chains three primitives -- unprepare, re-prepare under the
@@ -512,29 +512,29 @@ handle_notification(_ConnectionInfo, SenderId, Channel, Payload, {TestPid, Pendi
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_row_data(_ConnectionInfo, RowDescription, Row, {TestPid, Pending}) ->
+handle_row_data(_ConnectionInfo, _Ref, RowDescription, Row, {TestPid, Pending}) ->
     TestPid ! {handler, row, RowDescription, Row},
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_query_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+handle_query_result(_ConnectionInfo, _Ref, Result, {TestPid, Pending}) ->
     % `Result` is `empty | {ok, Tag :: binary()}` for a completed statement, or
     % `{error, Fields}` for one that failed -- there's no separate error callback.
     TestPid ! {handler, result, Result},
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_prepare_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+handle_prepare_result(_ConnectionInfo, _Ref, Result, {TestPid, Pending}) ->
     TestPid ! {handler, prepared, Result},
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_unprepare_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+handle_unprepare_result(_ConnectionInfo, _Ref, Result, {TestPid, Pending}) ->
     TestPid ! {handler, unprepared, Result},
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_execute_result(_ConnectionInfo, Result, {TestPid, Pending}) ->
+handle_execute_result(_ConnectionInfo, _Ref, Result, {TestPid, Pending}) ->
     TestPid ! {handler, executed, Result},
     {[], {TestPid, Pending}}.
 
@@ -550,22 +550,23 @@ handle_call(_ConnectionInfo, Request, _From, {TestPid, Pending}) ->
     {[], {TestPid, Pending}}.
 
 -doc false.
-handle_cast(_ConnectionInfo, {query, Sql}, {TestPid, Pending}) ->
-    % No need to check phase/readiness first -- a `{query, _}` action that arrives
+handle_cast(_ConnectionInfo, {query, Ref, Sql}, {TestPid, Pending}) ->
+    % No need to check phase/readiness first -- a `{query, _, _}` action that arrives
     % while a statement is already in flight is postponed automatically by
     % `pgc_connection_statem_common` until the connection is back in `#s_ready{}`.
-    {[{query, Sql}], {TestPid, Pending}};
-handle_cast(_ConnectionInfo, {prepare, Name, Text}, {TestPid, Pending}) ->
-    {[{prepare, Name, Text}], {TestPid, Pending}};
-handle_cast(_ConnectionInfo, {unprepare, Name}, {TestPid, Pending}) ->
-    {[{unprepare, Name}], {TestPid, Pending}};
-handle_cast(_ConnectionInfo, {execute, Name, Parameters, Options}, {TestPid, Pending}) ->
-    {[{execute, Name, Parameters, Options}], {TestPid, Pending}};
+    {[{query, Ref, Sql}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {prepare, Ref, Name, Text}, {TestPid, Pending}) ->
+    {[{prepare, Ref, Name, Text}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {unprepare, Ref, Name}, {TestPid, Pending}) ->
+    {[{unprepare, Ref, Name}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {execute, Ref, Name, Parameters, Options}, {TestPid, Pending}) ->
+    {[{execute, Ref, Name, Parameters, Options}], {TestPid, Pending}};
 handle_cast(_ConnectionInfo, {reprepare, Name, NewText}, {TestPid, Pending}) ->
     % `chained_actions_from_one_callback_test`'s own trigger -- one callback return
     % batches three primitives, chained purely via the ordinary postpone-until-ready
     % mechanism, no extra wiring needed on either side.
-    {[{unprepare, Name}, {prepare, Name, NewText}, {execute, Name, [], #{}}], {TestPid, Pending}}.
+    Ref = make_ref(),
+    {[{unprepare, Ref, Name}, {prepare, Ref, Name, NewText}, {execute, Ref, Name, [], #{}}], {TestPid, Pending}}.
 
 -doc false.
 handle_info(_ConnectionInfo, _Info, {TestPid, Pending}) ->

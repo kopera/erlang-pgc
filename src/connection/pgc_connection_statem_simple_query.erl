@@ -2,7 +2,7 @@
 -moduledoc false.
 
 -export([
-    enter/2
+    enter/3
 ]).
 
 -behaviour(gen_statem).
@@ -24,6 +24,7 @@
 % States ----------------------------------------------------------------------
 
 -record #s_simple_query {
+    ref :: term(),
     row_description :: [pgc_protocol_message:row_description_field()]
 }.
 
@@ -31,11 +32,13 @@
 % API
 % ------------------------------------------------------------------------------
 
--spec enter(QueryText, ConnectionData) -> gen_statem:event_handler_result(#s_simple_query{}, ConnectionData) when
+-spec enter(Ref, QueryText, ConnectionData) -> gen_statem:event_handler_result(#s_simple_query{}, ConnectionData) when
+    Ref :: term(),
     QueryText :: unicode:chardata(),
     ConnectionData :: #data{}.
-enter(QueryText, ConnectionData) ->
+enter(Ref, QueryText, ConnectionData) ->
     {ok, NextState, NextData, Actions} = init({
+        Ref,
         QueryText,
         ConnectionData
     }),
@@ -47,11 +50,13 @@ enter(QueryText, ConnectionData) ->
 % gen_statem callbacks
 % ------------------------------------------------------------------------------
 
--spec init({QueryText, ConnectionData}) -> {ok, #s_simple_query{}, ConnectionData, [gen_statem:action()]} when
+-spec init({Ref, QueryText, ConnectionData}) -> {ok, #s_simple_query{}, ConnectionData, [gen_statem:action()]} when
+    Ref :: term(),
     QueryText :: unicode:chardata(),
     ConnectionData :: #data{}.
-init({QueryText, ConnectionData}) ->
+init({Ref, QueryText, ConnectionData}) ->
     {ok, #s_simple_query{
+        ref = Ref,
         row_description = []
     }, ConnectionData, [
         {next_event, internal, #send{
@@ -83,25 +88,26 @@ handle_event(internal, #row_description{fields = Fields}, #s_simple_query{} = St
 
 handle_event(internal, #data_row{values = Values}, #s_simple_query{} = State, _ConnectionData) ->
     #s_simple_query{
+        ref = Ref,
         row_description = RowDescription
     } = State,
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_row_data, args = [RowDescription, Values]}}
+        {next_event, internal, #callback{name = handle_row_data, args = [Ref, RowDescription, Values]}}
     ]};
 
-handle_event(internal, #command_complete{tag = Tag}, #s_simple_query{} = _State, _ConnectionData) ->
+handle_event(internal, #command_complete{tag = Tag}, #s_simple_query{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_query_result, args = [{ok, Tag}]}}
+        {next_event, internal, #callback{name = handle_query_result, args = [Ref, {ok, Tag}]}}
     ]};
 
-handle_event(internal, #empty_query_response{}, #s_simple_query{} = _State, _ConnectionData) ->
+handle_event(internal, #empty_query_response{}, #s_simple_query{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_query_result, args = [empty]}}
+        {next_event, internal, #callback{name = handle_query_result, args = [Ref, empty]}}
     ]};
 
-handle_event(internal, #error_response{fields = Fields}, #s_simple_query{}, _ConnectionData) ->
+handle_event(internal, #error_response{fields = Fields}, #s_simple_query{ref = Ref}, _ConnectionData) ->
     {keep_state_and_data, [
-        {next_event, internal, #callback{name = handle_query_result, args = [{error, Fields}]}}
+        {next_event, internal, #callback{name = handle_query_result, args = [Ref, {error, Fields}]}}
     ]};
 
 handle_event(internal, #ready_for_query{status = Status}, #s_simple_query{}, ConnectionData) ->

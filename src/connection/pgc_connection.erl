@@ -39,19 +39,22 @@ The connection reached `ReadyForQuery`.
     ConnectionInfo :: connection_info(),
     State :: term().
 
--callback handle_row_data(ConnectionInfo, RowDescription, RowData, State) -> {[action()], State} when
+-callback handle_row_data(ConnectionInfo, Ref, RowDescription, RowData, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
+    Ref :: term(),
     RowDescription :: row_description(),
     RowData :: [null | binary()],
     State :: term().
 
--callback handle_query_result(ConnectionInfo, Result, State) -> {[action()], State} when
+-callback handle_query_result(ConnectionInfo, Ref, Result, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
+    Ref :: term(),
     Result :: empty | {ok, Tag :: binary()} | {error, pgc_protocol_message:error_response_fields()},
     State :: term().
 
--callback handle_prepare_result(ConnectionInfo, Result, State) -> {[action()], State} when
+-callback handle_prepare_result(ConnectionInfo, Ref, Result, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
+    Ref :: term(),
     Result :: {ok, StatementName :: unicode:chardata(), StatementDescription} | {error, pgc_protocol_message:error_response_fields()},
     StatementDescription :: #{
         parameters_description := ParametersDescription,
@@ -61,13 +64,15 @@ The connection reached `ReadyForQuery`.
     RowDescription :: row_description(),
     State :: term().
 
--callback handle_unprepare_result(ConnectionInfo, Result, State) -> {[action()], State} when
+-callback handle_unprepare_result(ConnectionInfo, Ref, Result, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
+    Ref :: term(),
     Result :: {ok, Name :: unicode:chardata()},
     State :: term().
 
--callback handle_execute_result(ConnectionInfo, Result, State) -> {[action()], State} when
+-callback handle_execute_result(ConnectionInfo, Ref, Result, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
+    Ref :: term(),
     Result :: empty | {ok, Tag :: binary()} | {error, pgc_protocol_message:error_response_fields()},
     State :: term().
 
@@ -111,11 +116,11 @@ The connection is about to stop. No further callbacks follow.
 
 -optional_callbacks([
     handle_ready/2,
-    handle_row_data/4,
-    handle_query_result/3,
-    handle_prepare_result/3,
-    handle_unprepare_result/3,
-    handle_execute_result/3,
+    handle_row_data/5,
+    handle_query_result/4,
+    handle_prepare_result/4,
+    handle_unprepare_result/4,
+    handle_execute_result/4,
     handle_notice/3,
     handle_notification/5,
     handle_call/4,
@@ -156,12 +161,12 @@ The connection is about to stop. No further callbacks follow.
 -type row_description() :: [pgc_protocol_message:row_description_field()].
 
 -type action() ::
-    {query, Text :: unicode:chardata()}
-    | {prepare, Name :: unicode:chardata(), Text :: unicode:chardata()}
-    | {unprepare, Name :: unicode:chardata()}
-    | {execute, Name :: unicode:chardata(), Parameters :: execute_parameters(), Options :: execute_options()}
+    {query, Ref :: term(), Text :: unicode:chardata()}
+    | {prepare, Ref :: term(), Name :: unicode:chardata(), Text :: unicode:chardata()}
+    | {unprepare, Ref :: term(), Name :: unicode:chardata()}
+    | {execute, Ref :: term(), Name :: unicode:chardata(), Parameters :: execute_parameters(), Options :: execute_options()}
     | {reply, gen_statem:from(), Reply :: term()}
-    | cancel.
+    | {cancel, Ref :: term()}.
 
 -type execute_parameters() :: pgc_connection_statem_extended_query:execute_parameters().
 -type execute_options() :: pgc_connection_statem_extended_query:execute_options().

@@ -31,6 +31,11 @@ handle_event(internal, #execute{}, _State, #data{}) ->
     % Always postpone until handled by the ready state
     {keep_state_and_data, [postpone]};
 
+handle_event(internal, #cancel{ref = Ref}, _State, #data{current_ref = CurrentRef}) when Ref =/= CurrentRef ->
+    % Stale, or not-yet-dispatched -- whatever this targets isn't what's on the wire. No-op, same
+    % as Postgres's own CancelRequest semantics when nothing matching is currently executing.
+    keep_state_and_data;
+
 handle_event(internal, #cancel{}, _State, #data{transport = undefined}) ->
     keep_state_and_data;
 
@@ -69,16 +74,16 @@ handle_event(internal, #callback{name = CallbackName, args = CallbackArgs0}, Sta
     {keep_state, ConnectionData#data{handler_state = HandlerState1}, [case CallbackAction of
         {reply, _, _} = Reply ->
             Reply;
-        {query, Text} ->
-            {next_event, internal, #query{text = Text}};
-        {prepare, Name, Text} ->
-            {next_event, internal, #prepare{name = Name, text = Text}};
-        {unprepare, Name} ->
-            {next_event, internal, #unprepare{name = Name}};
-        {execute, Name, Parameters, Options} ->
-            {next_event, internal, #execute{name = Name, parameters = Parameters, options = Options}};
-        cancel ->
-            {next_event, internal, #cancel{}}
+        {query, Ref, Text} ->
+            {next_event, internal, #query{ref = Ref, text = Text}};
+        {prepare, Ref, Name, Text} ->
+            {next_event, internal, #prepare{ref = Ref, name = Name, text = Text}};
+        {unprepare, Ref, Name} ->
+            {next_event, internal, #unprepare{ref = Ref, name = Name}};
+        {execute, Ref, Name, Parameters, Options} ->
+            {next_event, internal, #execute{ref = Ref, name = Name, parameters = Parameters, options = Options}};
+        {cancel, Ref} ->
+            {next_event, internal, #cancel{ref = Ref}}
     end || CallbackAction <- CallbackActions]};
 
 handle_event(internal, #parameter_status{name = Name, value = Value}, _State, ConnectionData) ->
