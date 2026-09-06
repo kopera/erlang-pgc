@@ -275,11 +275,11 @@ execute_domain_decodes_as_base_type_test(Config) ->
 execute_missing_codec_crashes_connection_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
-    % No codec is registered for `timestamp` -- decoding it should fail loudly rather than
+    % No codec is registered for `point` -- decoding it should fail loudly rather than
     % silently returning something wrong. Decoding happens in the caller's own process (see
     % collect/7), so this crashes the caller, not the shared connection -- which stays usable
     % for every other (unrelated) caller.
-    ?assertError({codec_missing, _}, pgc_client:execute(Connection, "select now()::timestamp as t", [])),
+    ?assertError({codec_missing, _}, pgc_client:execute(Connection, "select point(1,2) as t", [])),
     ?assert(is_process_alive(Connection)),
 
     {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),

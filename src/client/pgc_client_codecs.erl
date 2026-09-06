@@ -81,7 +81,23 @@ default_codec_modules() ->
         pgc_client_codec_text,
         pgc_client_codec_array,
         pgc_client_codec_enum,
-        pgc_client_codec_record
+        pgc_client_codec_record,
+        pgc_client_codec_bitstring,
+        pgc_client_codec_char,
+        pgc_client_codec_date,
+        pgc_client_codec_hstore,
+        pgc_client_codec_interval,
+        pgc_client_codec_json,
+        pgc_client_codec_jsonb,
+        pgc_client_codec_ltree,
+        pgc_client_codec_name,
+        pgc_client_codec_oid,
+        pgc_client_codec_tid,
+        pgc_client_codec_time,
+        pgc_client_codec_timetz,
+        pgc_client_codec_timestamp,
+        pgc_client_codec_void,
+        pgc_client_codec_xid8
     ].
 
 default_codecs() ->
