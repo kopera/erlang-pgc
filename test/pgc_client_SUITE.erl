@@ -24,6 +24,10 @@
     execute_resolves_type_created_mid_session_test/1,
     execute_cache_reuses_prepared_statement_test/1,
     execute_cache_reprepares_on_text_change_test/1,
+    execute_array_round_trip_test/1,
+    execute_enum_decode_option_test/1,
+    execute_domain_decodes_as_base_type_test/1,
+    execute_missing_codec_crashes_connection_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
     transaction_exception_rolls_back_test/1
@@ -84,6 +88,10 @@ groups() ->
             execute_resolves_type_created_mid_session_test,
             execute_cache_reuses_prepared_statement_test,
             execute_cache_reprepares_on_text_change_test,
+            execute_array_round_trip_test,
+            execute_enum_decode_option_test,
+            execute_domain_decodes_as_base_type_test,
+            execute_missing_codec_crashes_connection_test,
             transaction_commit_test,
             transaction_rollback_test,
             transaction_exception_rolls_back_test
@@ -98,14 +106,14 @@ groups() ->
 execute_with_parameters_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
-    {ok, Metadata, Rows} = pgc_client:execute(Connection, "select $1::int4 as n, $2::text as t", [<<"42">>, <<"hi">>]),
+    {ok, Metadata, Rows} = pgc_client:execute(Connection, "select $1::int4 as n, $2::text as t", [42, ~"hi"]),
     ?assertMatch(#{command := ~"select", rows := 1}, Metadata),
-    ?assertEqual([#{<<"n">> => <<"42">>, <<"t">> => <<"hi">>}], Rows),
+    ?assertEqual([#{<<"n">> => 42, <<"t">> => <<"hi">>}], Rows),
 
     % The connection reuses the same unnamed statement slot on every call --
     % prove it's still usable for a second, differently-shaped query.
     {ok, _Metadata2, Rows2} = pgc_client:execute(Connection, "select 1 as a, 2 as b, 3 as c", []),
-    ?assertEqual([#{<<"a">> => <<"1">>, <<"b">> => <<"2">>, <<"c">> => <<"3">>}], Rows2),
+    ?assertEqual([#{<<"a">> => 1, <<"b">> => 2, <<"c">> => 3}], Rows2),
 
     ok = pgc_client:stop(Connection).
 
@@ -117,16 +125,16 @@ execute_error_is_not_fatal_test(Config) ->
     ?assert(is_process_alive(Connection)),
 
     % Not fatal -- the connection is still usable afterward.
-    {ok, _Metadata, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", []),
+    {ok, _Metadata, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
 
     ok = pgc_client:stop(Connection).
 
 execute_row_formats_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
-    {ok, _, [[<<"1">>, <<"2">>]]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => list}),
-    {ok, _, [{<<"1">>, <<"2">>}]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => tuple}),
-    {ok, _, [[{<<"a">>, <<"1">>}, {<<"b">>, <<"2">>}]]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => proplist}),
+    {ok, _, [[1, 2]]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => list}),
+    {ok, _, [{1, 2}]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => tuple}),
+    {ok, _, [[{<<"a">>, 1}, {<<"b">>, 2}]]} = pgc_client:execute(Connection, "select 1 as a, 2 as b", [], #{row => proplist}),
 
     ok = pgc_client:stop(Connection).
 
@@ -137,7 +145,7 @@ execute_timeout_cancels_query_test(Config) ->
 
     % If cancellation actually reached Postgres, the connection is free again almost
     % immediately -- without it, this would block for the remaining ~9.8s of the sleep.
-    {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
+    {Time, {ok, _, [#{<<"n">> := 1}]}} = timer:tc(fun () ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),
     ?assert(Time < 2_000_000),
@@ -159,7 +167,7 @@ execute_timeout_during_type_refresh_cancels_test(Config) ->
     % this is exactly the scenario the ref-symmetric redesign (the internal refresh reuses
     % the caller's own Ref, so a cancel reaches whichever of its actions is on the wire)
     % exists to make safe.
-    {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
+    {Time, {ok, _, [#{<<"n">> := 1}]}} = timer:tc(fun () ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),
     ?assert(Time < 2_000_000),
@@ -172,7 +180,7 @@ execute_streams_rows_test(Config) ->
     Fun = fun (_RowDescription, [N], Acc) -> {continue, [N | Acc]} end,
     {ok, Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 5) as n", [], Fun, [], #{}),
     ?assertMatch(#{command := ~"select", rows := 5}, Metadata),
-    ?assertEqual([<<"5">>, <<"4">>, <<"3">>, <<"2">>, <<"1">>], Values),
+    ?assertEqual([5, 4, 3, 2, 1], Values),
 
     ok = pgc_client:stop(Connection).
 
@@ -181,15 +189,15 @@ execute_halt_cancels_query_test(Config) ->
 
     Fun = fun (_RowDescription, [N], Acc) ->
         case N of
-            <<"3">> -> {halt, [N | Acc]};
+            3 -> {halt, [N | Acc]};
             _ -> {continue, [N | Acc]}
         end
     end,
     {ok, _Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 1000000) as n", [], Fun, [], #{}),
-    ?assertEqual([<<"3">>, <<"2">>, <<"1">>], Values),
+    ?assertEqual([3, 2, 1], Values),
 
     % Cancellation should free the connection quickly rather than draining a million rows.
-    {Time, {ok, _, [#{<<"n">> := <<"1">>}]}} = timer:tc(fun () ->
+    {Time, {ok, _, [#{<<"n">> := 1}]}} = timer:tc(fun () ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),
     ?assert(Time < 2_000_000),
@@ -201,7 +209,7 @@ execute_resolves_types_across_statements_test(Config) ->
 
     % A connection's type cache starts empty, so the first execute always exercises the
     % refresh-and-retry path; a second, differently-typed one right after must also succeed.
-    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", []),
+    {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
     {ok, _, [#{<<"t">> := <<"hi">>}]} = pgc_client:execute(Connection, "select 'hi'::text as t", []),
 
     ok = pgc_client:stop(Connection).
@@ -211,7 +219,7 @@ execute_resolves_type_created_mid_session_test(Config) ->
 
     % Warm the cache before the type below exists, so referencing it later can only succeed
     % if a miss triggers a fresh refresh rather than relying on a one-time startup snapshot.
-    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", []),
+    {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
 
     {ok, _, []} = pgc_client:execute(Connection, "create type mood as enum ('sad', 'ok', 'happy')", []),
     {ok, _, [#{<<"m">> := <<"happy">>}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", []),
@@ -223,8 +231,8 @@ execute_cache_reuses_prepared_statement_test(Config) ->
 
     % Same cache key, same text, twice -- the second call should hit the cached statement
     % (skip parse/describe) and still return correct results.
-    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select $1::int4 as n", [<<"1">>], #{cache => {true, my_statement}}),
-    {ok, _, [#{<<"n">> := <<"2">>}]} = pgc_client:execute(Connection, "select $1::int4 as n", [<<"2">>], #{cache => {true, my_statement}}),
+    {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select $1::int4 as n", [1], #{cache => {true, my_statement}}),
+    {ok, _, [#{<<"n">> := 2}]} = pgc_client:execute(Connection, "select $1::int4 as n", [2], #{cache => {true, my_statement}}),
 
     ok = pgc_client:stop(Connection).
 
@@ -233,8 +241,48 @@ execute_cache_reprepares_on_text_change_test(Config) ->
 
     % Reusing the same cache key with different text must close and re-prepare under that
     % name rather than executing stale SQL against it.
-    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", [], #{cache => {true, my_statement}}),
-    {ok, _, [#{<<"m">> := <<"2">>}]} = pgc_client:execute(Connection, "select 2 as m", [], #{cache => {true, my_statement}}),
+    {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", [], #{cache => {true, my_statement}}),
+    {ok, _, [#{<<"m">> := 2}]} = pgc_client:execute(Connection, "select 2 as m", [], #{cache => {true, my_statement}}),
+
+    ok = pgc_client:stop(Connection).
+
+execute_array_round_trip_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, [#{<<"a">> := [1, 2, 3]}]} = pgc_client:execute(Connection, "select $1::int4[] as a", [[1, 2, 3]]),
+
+    ok = pgc_client:stop(Connection).
+
+execute_enum_decode_option_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, []} = pgc_client:execute(Connection, "create type mood as enum ('sad', 'ok', 'happy')", []),
+    {ok, _, [#{<<"m">> := <<"happy">>}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", []),
+    {ok, _, [#{<<"m">> := happy}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", [], #{codecs => #{enum => #{decode => atom}}}),
+
+    ok = pgc_client:stop(Connection).
+
+execute_domain_decodes_as_base_type_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % A domain's wire representation is byte-identical to its base type's -- this should decode
+    % transparently as a plain int4, with no domain-specific codec involved.
+    {ok, _, []} = pgc_client:execute(Connection, "create domain positive_int as int4 check (value > 0)", []),
+    {ok, _, [#{<<"p">> := 5}]} = pgc_client:execute(Connection, "select 5::positive_int as p", []),
+
+    ok = pgc_client:stop(Connection).
+
+execute_missing_codec_crashes_connection_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % No codec is registered for `timestamp` -- decoding it should fail loudly rather than
+    % silently returning something wrong. Decoding happens in the caller's own process (see
+    % collect/7), so this crashes the caller, not the shared connection -- which stays usable
+    % for every other (unrelated) caller.
+    ?assertError({codec_missing, _}, pgc_client:execute(Connection, "select now()::timestamp as t", [])),
+    ?assert(is_process_alive(Connection)),
+
+    {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
 
     ok = pgc_client:stop(Connection).
 
@@ -249,7 +297,7 @@ transaction_commit_test(Config) ->
     end, #{}),
     ?assertEqual(committed, Result),
 
-    {ok, _, [#{<<"count">> := <<"1">>}]} = pgc_client:execute(Connection, "select count(*) as count from pgc_client_test", []),
+    {ok, _, [#{<<"count">> := 1}]} = pgc_client:execute(Connection, "select count(*) as count from pgc_client_test", []),
 
     ok = pgc_client:stop(Connection).
 
@@ -264,7 +312,7 @@ transaction_rollback_test(Config) ->
     end, #{}),
     ?assertEqual(rolled_back, Result),
 
-    {ok, _, [#{<<"count">> := <<"0">>}]} = pgc_client:execute(Connection, "select count(*) as count from pgc_client_test", []),
+    {ok, _, [#{<<"count">> := 0}]} = pgc_client:execute(Connection, "select count(*) as count from pgc_client_test", []),
 
     ok = pgc_client:stop(Connection).
 
@@ -278,7 +326,7 @@ transaction_exception_rolls_back_test(Config) ->
         erlang:error(boom)
     end, #{})),
 
-    {ok, _, [#{<<"count">> := <<"0">>}]} = pgc_client:execute(Connection, "select count(*) as count from pgc_client_test", []),
+    {ok, _, [#{<<"count">> := 0}]} = pgc_client:execute(Connection, "select count(*) as count from pgc_client_test", []),
     ?assert(is_process_alive(Connection)),
 
     ok = pgc_client:stop(Connection).

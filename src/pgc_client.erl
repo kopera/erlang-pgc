@@ -29,10 +29,11 @@
 
 -import_record(pgc_protocol_message, [row_description_field]).
 
+-type request_phase() :: preparing | unpreparing | executing | querying | refreshing_types | awaiting_parameters.
+
 -record #request{
     statement_text :: unicode:chardata(),
-    parameters :: pgc_connection:execute_parameters(),
-    refreshing_types :: boolean()
+    phase :: request_phase()
 }.
 
 -record #statement{
@@ -64,16 +65,18 @@
     parameters => #{
         replication => none(),
         atom() => unicode:chardata()
-    }
+    },
+
+    codecs => #{binary() => module()}
 }.
 -spec start_link(start_options()) -> pgc_connection:start_ret().
 start_link(Options) ->
-    pgc_connection:start_link(?MODULE, [], Options).
+    pgc_connection:start_link(?MODULE, maps:get(codecs, Options, #{}), Options).
 
 
 -spec start_link(pgc_connection:connection_name(), start_options()) -> pgc_connection:start_ret().
 start_link(ClientName, Options) ->
-    pgc_connection:start_link(ClientName, ?MODULE, [], Options).
+    pgc_connection:start_link(ClientName, ?MODULE, maps:get(codecs, Options, #{}), Options).
 
 
 -spec stop(pgc_connection:connection_ref()) -> ok.
@@ -108,12 +111,13 @@ would (`exit({timeout, _})`).
     Options :: #{
         row => map | list | tuple | proplist,
         timeout => timeout(),
-        cache => false | {true, Key :: string() | unicode:unicode_binary() | atom()}
+        cache => false | {true, Key :: string() | unicode:unicode_binary() | atom()},
+        codecs => #{atom() => term()}
     },
     Metadata :: result_metadata(),
     Rows :: result_rows(),
     Error :: execute_error().
--type parameters() :: [iodata() | null].
+-type parameters() :: [term() | null].
 -type result_metadata() :: #{
     command := binary(),
     rows => non_neg_integer()
@@ -141,16 +145,17 @@ cancels the query on the server; see `execute/4` for `Options`' `timeout` semant
     Connection :: pgc_connection:connection_ref(),
     StatementText :: unicode:chardata(),
     Parameters :: parameters(),
-    Fun :: fun((pgc_connection:row_description(), [null | binary()], Acc) -> {continue, Acc} | {halt, Acc}),
+    Fun :: fun((pgc_connection:row_description(), [term() | null], Acc) -> {continue, Acc} | {halt, Acc}),
     Options :: #{
         timeout => timeout(),
-        cache => false | {true, Key :: string() | unicode:unicode_binary() | atom()}
+        cache => false | {true, Key :: string() | unicode:unicode_binary() | atom()},
+        codecs => #{atom() => term()}
     },
     Metadata :: result_metadata(),
     Error :: execute_error().
 execute(Connection, StatementText, Parameters, Fun, Acc, Options) ->
     Timeout = maps:get(timeout, Options, infinity),
-    request(Connection, {execute, StatementText, Parameters, Options}, Fun, Acc, Timeout).
+    request(Connection, {execute, StatementText, Options}, Parameters, Options, Fun, Acc, Timeout).
 
 
 -doc """
@@ -165,26 +170,43 @@ Used internally for `commit`, `rollback` and `start transaction`.
     Error :: pgc_protocol_message:error_response_fields().
 execute_simple(Connection, StatementText) ->
     Fun = fun (_RowDescription, _Values, Acc) -> {continue, Acc} end,
-    request(Connection, {query, StatementText}, Fun, [], infinity).
+    request(Connection, {query, StatementText}, [], #{}, Fun, [], infinity).
 
 
--doc false.
-request(Connection, Request, Fun, Acc, Timeout) ->
+-doc """
+Encoding and decoding are deliberately done here, in the caller's own process, rather than in
+`handle_row_data/5`/`handle_prepare_result/4` (which run in the connection process): the
+connection is a shared, serializing bottleneck, while `Types` (`pgc_client_types:t()`) is a
+`protected` ets table specifically so any number of callers can read it -- and therefore encode
+and decode -- concurrently, off the connection's own execution stack. The connection only ever
+mediates the wire and owns the (write side of the) type cache.
+""".
+request(Connection, Request, Parameters, Options, Fun, Acc, Timeout) ->
     Ref = erlang:monitor(process, Connection, [{alias, demonitor}]),
     try
         ok = pgc_connection:cast(Connection, {request, Ref, Request}),
-        collect(Connection, Ref, Fun, Acc, pgc_deadline:from_timeout(Timeout))
+        collect(Connection, Ref, Parameters, Options, Fun, Acc, pgc_deadline:from_timeout(Timeout))
     after
         erlang:demonitor(Ref, [flush])
     end.
 
 -doc false.
-collect(Connection, Ref, Fun, Acc, Deadline) ->
+collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline) ->
     receive
-        {row, Ref, RowDescription, Values} ->
-            case Fun(RowDescription, Values, Acc) of
+        {encode_parameters, Ref, Name, ParametersDescription, Types} ->
+            % Sent exactly once, right after the statement's parameter oids become known
+            % (fresh prepare or cache hit) -- encode locally, then hand the connection the
+            % finished bytes so it can actually dispatch `execute`.
+            CallTypes = pgc_client_types:with_options(Types, maps:get(codecs, Options, #{})),
+            EncodedParameters = encode_parameters(ParametersDescription, Parameters, CallTypes),
+            ok = pgc_connection:cast(Connection, {parameters, Ref, Name, EncodedParameters}),
+            collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline);
+        {row, Ref, RowDescription, Values, Types} ->
+            CallTypes = pgc_client_types:with_options(Types, maps:get(codecs, Options, #{})),
+            DecodedValues = decode_values(RowDescription, Values, CallTypes),
+            case Fun(RowDescription, DecodedValues, Acc) of
                 {continue, Acc1} ->
-                    collect(Connection, Ref, Fun, Acc1, Deadline);
+                    collect(Connection, Ref, Parameters, Options, Fun, Acc1, Deadline);
                 {halt, Acc1} ->
                     ok = pgc_connection:cast(Connection, {cancel, Ref}),
                     {ok, #{}, Acc1}
@@ -201,6 +223,22 @@ collect(Connection, Ref, Fun, Acc, Deadline) ->
         ok = pgc_connection:cast(Connection, {cancel, Ref}),
         exit({timeout, {?MODULE, execute, [Connection]}})
     end.
+
+encode_parameters(ParametersDescription, Parameters, Types) ->
+    [
+        {binary, pgc_client_codec:encode(Value, type_descriptor(Oid, Types), Types)}
+        || {Oid, Value} <- lists:zip(ParametersDescription, Parameters)
+    ].
+
+decode_values(RowDescription, Values, Types) ->
+    [
+        pgc_client_codec:decode(Value, type_descriptor(Field#row_description_field.type_oid, Types), Types)
+        || {Field, Value} <- lists:zip(RowDescription, Values)
+    ].
+
+type_descriptor(Oid, Types) ->
+    {ok, Descriptor} = pgc_client_types:lookup(Oid, Types),
+    Descriptor.
 
 
 -type transaction_options() :: #{
@@ -293,18 +331,14 @@ rollback(Connection, Reason) ->
 % -----------------------------------------------------------------------------
 
 -doc false.
-init([]) ->
-    {ok, #state{types = pgc_client_types:new(), requests = #{}, statements = #{}}}.
+init(Codecs) ->
+    {ok, #state{types = pgc_client_types:new(Codecs), requests = #{}, statements = #{}}}.
 
 
 -doc false.
-handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters, Options}}, #state{} = State) ->
+handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Options}}, #state{} = State) ->
     #state{requests = Requests, statements = Statements} = State,
-    Req = #request{
-        statement_text = StatementText,
-        parameters = [{text, Parameter} || Parameter <- Parameters],
-        refreshing_types = false
-    },
+    Req = #request{statement_text = StatementText, phase = preparing},
     NewState = State#state{requests = Requests#{Ref => Req}},
     case maps:get(cache, Options, false) of
         false ->
@@ -313,19 +347,14 @@ handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters,
             Name = cache_statement_name(Key),
             Hash = statement_hash(StatementText),
             case Statements of
-                #{Name := #statement{hash = Hash}} ->
-                    % Already prepared under this name with this exact text -- skip straight
-                    % to execute, no parse/describe round-trip needed.
-                    {[{execute, Ref, Name, Req#request.parameters, #{}}], NewState};
+                #{Name := #statement{hash = Hash, parameters_description = ParametersDescription}} ->
+                    dispatch_execute(Ref, Name, ParametersDescription, State#state.types, NewState);
                 #{Name := #statement{}} ->
-                    % Same cache key, different statement text (the exact-hash pattern above
-                    % already failed to match) -- the old prepared statement must be closed
-                    % before the name can be reused. Leave `prepared` untouched here: if a
-                    % cancel lands before Postgres processes the Close, the old statement is
-                    % still there, and this entry is still an accurate description of what's
-                    % on the wire under Name -- handle_unprepare_result/4 is what actually
-                    % knows whether the Close happened.
-                    {[{unprepare, Ref, Name}], NewState};
+                    % Different text under the same name -- close it first, but leave
+                    % `Statements` alone until handle_unprepare_result/4 confirms the Close
+                    % actually happened (a cancel can abort it before Postgres runs it).
+                    UnpreparingReq = Req#request{phase = unpreparing},
+                    {[{unprepare, Ref, Name}], NewState#state{requests = Requests#{Ref => UnpreparingReq}}};
                 #{} ->
                     {[{prepare, Ref, Name, StatementText}], NewState}
             end
@@ -333,19 +362,26 @@ handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters,
 
 handle_cast(_ConnectionInfo, {request, Ref, {query, StatementText}}, #state{} = State) ->
     #state{requests = Requests} = State,
-    Req = #request{
-        statement_text = StatementText,
-        parameters = [],
-        refreshing_types = false
-    },
+    Req = #request{statement_text = StatementText, phase = querying},
     {[
         {query, Ref, StatementText}
     ], State#state{requests = Requests#{Ref => Req}}};
 
-handle_cast(_ConnectionInfo, {cancel, Ref}, #state{} = State) ->
-    % Whether this actually interrupts anything is pgc_connection's call to make -- it tracks
-    % which Ref is genuinely on the wire, we don't need our own head-of-queue guess here.
-    {[{cancel, Ref}], State}.
+handle_cast(_ConnectionInfo, {parameters, Ref, Name, EncodedParameters}, #state{} = State) ->
+    #state{requests = Requests} = State,
+    #{Ref := Req} = Requests,
+    NewState = State#state{requests = Requests#{Ref => Req#request{phase = executing}}},
+    {[{execute, Ref, Name, EncodedParameters, #{result_format => binary}}], NewState};
+
+handle_cast(_ConnectionInfo, {cancel, Ref}, #state{requests = Requests} = State) ->
+    % A request `awaiting_parameters` has nothing on the wire to cancel, and the caller has
+    % already given up -- it'll never send `{parameters, ...}`, so nothing else will ever remove
+    % this entry. Drop it here instead of leaking it.
+    NewRequests = case Requests of
+        #{Ref := #request{phase = awaiting_parameters}} -> maps:remove(Ref, Requests);
+        #{} -> Requests
+    end,
+    {[{cancel, Ref}], State#state{requests = NewRequests}}.
 
 
 -doc false.
@@ -364,16 +400,12 @@ handle_prepare_result(_ConnectionInfo, Ref, {ok, Name, StatementDescription}, St
     NewState = State#state{statements = Statements#{Name => CachedStatement}},
     case lists:all(fun (Oid) -> pgc_client_types:has(Oid, Types) end, NeededOids) of
         true ->
-            {[{execute, Ref, Name, Req#request.parameters, #{}}], NewState};
+            dispatch_execute(Ref, Name, ParametersDescription, Types, NewState);
         false ->
-            % Some of the types this statement needs aren't cached yet -- refresh first;
-            % handle_query_result/4 below decides what to do once it's actually done,
-            % rather than pre-committing to a re-prepare that a cancel can't then stop.
-            % Reuses this request's own Ref -- from pgc_connection's point of view the
-            % refresh's `query` action *is* this request's currently in-flight action,
-            % which is what lets a caller's cancel interrupt it.
+            % Missing types -- refresh first, reusing this request's Ref so a cancel still
+            % reaches it. handle_query_result/4 picks up from there.
             {[{query, Ref, refresh_statement_text()}],
-                NewState#state{requests = Requests#{Ref => Req#request{refreshing_types = true}}}}
+                NewState#state{requests = Requests#{Ref => Req#request{phase = refreshing_types}}}}
     end;
 
 handle_prepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
@@ -383,24 +415,36 @@ handle_prepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
     {[], State#state{requests = NewRequests}}.
 
 
+% No parameters -- nothing to hand off, dispatch directly. Otherwise the caller encodes its
+% own parameters (see collect/7), and this request is `awaiting_parameters` until it replies.
+dispatch_execute(Ref, Name, [], _Types, State) ->
+    #state{requests = Requests} = State,
+    #{Ref := Req} = Requests,
+    NewState = State#state{requests = Requests#{Ref => Req#request{phase = executing}}},
+    {[{execute, Ref, Name, [], #{result_format => binary}}], NewState};
+dispatch_execute(Ref, Name, ParametersDescription, Types, State) ->
+    #state{requests = Requests} = State,
+    #{Ref := Req} = Requests,
+    Ref ! {encode_parameters, Ref, Name, ParametersDescription, Types},
+    {[], State#state{requests = Requests#{Ref => Req#request{phase = awaiting_parameters}}}}.
+
+
 -doc false.
 handle_unprepare_result(_ConnectionInfo, Ref, {ok, Name}, State) ->
-    % pgc_client only ever unprepares a statement to reclaim its name for a re-prepare with
-    % new text (see the cache-collision branch of handle_cast/3 above) -- so this is always
-    % followed by a prepare, never a terminal result on its own. The Close is now confirmed,
-    % so the name is genuinely free -- this is the point at which the stale cache entry
-    % actually stops describing reality, not when the unprepare was merely dispatched.
+    % Only ever reached to reclaim a name for a re-prepare with new text -- the Close is now
+    % confirmed, so the name is free and `Statements` can drop the stale entry.
     #state{requests = Requests, statements = Statements} = State,
     #{Ref := Req} = Requests,
-    NewState = State#state{statements = maps:remove(Name, Statements)},
-    {[{prepare, Ref, Name, Req#request.statement_text}], NewState};
+    NewReq = Req#request{phase = preparing},
+    NewState = State#state{
+        statements = maps:remove(Name, Statements),
+        requests = Requests#{Ref => NewReq}
+    },
+    {[{prepare, Ref, Name, NewReq#request.statement_text}], NewState};
 
 handle_unprepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
-    % Close didn't actually happen -- a cancel landed before Postgres got to it. The old
-    % statement, if any, is still live on the wire under this name, so `prepared` is left
-    % untouched (it's still an accurate description). Abandon the request the same way a
-    % cancel during a real execute already does, rather than assuming success and blindly
-    % retrying a prepare nobody's waiting on.
+    % Close didn't actually happen (a cancel beat it) -- the old statement is still live under
+    % this name, so `Statements` is left untouched. Abandon the request like any other cancel.
     #state{requests = Requests} = State,
     {_, NewRequests} = maps:take(Ref, Requests),
     Ref ! {done, Ref, {error, Fields}},
@@ -410,8 +454,8 @@ handle_unprepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
 -doc false.
 handle_row_data(_ConnectionInfo, Ref, RowDescription, Values, State) ->
     #{Ref := Req} = State#state.requests,
-    case Req#request.refreshing_types of
-        true ->
+    case Req#request.phase of
+        refreshing_types ->
             [Oid, Namespace, Name, Kind, Recv, Send, ElementType, ParentType, FieldNamesArray, FieldTypesArray] = Values,
             TypeId = binary_to_integer(Oid),
             ok = pgc_client_types:add(TypeId, #{
@@ -446,23 +490,25 @@ handle_row_data(_ConnectionInfo, Ref, RowDescription, Values, State) ->
                 end
             }, State#state.types),
             {[], State};
-        false ->
-            Ref ! {row, Ref, RowDescription, Values},
+        executing ->
+            % Decoding happens caller-side (see collect/7) -- just forward the raw wire
+            % values plus the shared (protected, multi-reader) type cache they need.
+            Ref ! {row, Ref, RowDescription, Values, State#state.types},
             {[], State}
     end.
 
 -doc false.
 handle_query_result(ConnectionInfo, Ref, Result, State) ->
     #{Ref := Req} = State#state.requests,
-    case Req#request.refreshing_types of
-        true ->
+    case Req#request.phase of
+        refreshing_types ->
             #state{requests = Requests} = State,
             case Result of
                 {ok, _Tag} ->
                     % Refresh actually completed -- now it's safe to retry the prepare
                     % (the unnamed statement doesn't survive the refresh's own Query
                     % message, hence re-preparing rather than resuming the old one).
-                    NewReq = Req#request{refreshing_types = false},
+                    NewReq = Req#request{phase = preparing},
                     {[{prepare, Ref, ~"", NewReq#request.statement_text}],
                         State#state{requests = Requests#{Ref => NewReq}}};
                 {error, Fields} ->
@@ -472,7 +518,7 @@ handle_query_result(ConnectionInfo, Ref, Result, State) ->
                     Ref ! {done, Ref, {error, Fields}},
                     {[], State#state{requests = maps:remove(Ref, Requests)}}
             end;
-        false ->
+        querying ->
             handle_execute_result(ConnectionInfo, Ref, Result, State)
     end.
 
@@ -582,7 +628,7 @@ refresh_statement_text() ->
             pg_type.typsend as send,
             pg_type.typreceive as recv,
             pg_type.typelem as element_type,
-            coalesce(pg_range.rngsubtype, 0) as parent_type,
+            coalesce(pg_range.rngsubtype, nullif(pg_type.typbasetype, 0), 0) as parent_type,
             array (
                 select pg_attribute.attname
                 from pg_attribute
@@ -620,7 +666,7 @@ handle_query_result_refresh_cancelled_test() ->
     % process, so `Ref ! Message` has a real alias to deliver into this mailbox.
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
-    Req = #request{statement_text = ~"select 1", parameters = [], refreshing_types = true},
+    Req = #request{statement_text = ~"select 1", phase = refreshing_types},
     State = #state{types = pgc_client_types:new(), requests = #{Ref => Req}, statements = #{}},
     {Actions, NewState} = handle_query_result(#{}, Ref, {error, #{}}, State),
     ?assertEqual([], Actions),
@@ -635,11 +681,11 @@ survive the refresh's own Query message.
 """.
 handle_query_result_refresh_succeeded_test() ->
     Ref = make_ref(),
-    Req = #request{statement_text = ~"select 1", parameters = [], refreshing_types = true},
+    Req = #request{statement_text = ~"select 1", phase = refreshing_types},
     State = #state{types = pgc_client_types:new(), requests = #{Ref => Req}, statements = #{}},
     {Actions, NewState} = handle_query_result(#{}, Ref, {ok, ~"SELECT 1"}, State),
     ?assertEqual([{prepare, Ref, ~"", ~"select 1"}], Actions),
-    ?assertEqual(#{Ref => Req#request{refreshing_types = false}}, NewState#state.requests).
+    ?assertEqual(#{Ref => Req#request{phase = preparing}}, NewState#state.requests).
 
 -doc """
 A cancel landing while a cache-collision unprepare is in flight (see the cache-collision
@@ -650,7 +696,7 @@ the close succeeded and blindly retrying the prepare nobody's waiting on anymore
 handle_unprepare_result_cancelled_test() ->
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
-    Req = #request{statement_text = ~"select 1", parameters = [], refreshing_types = false},
+    Req = #request{statement_text = ~"select 1", phase = unpreparing},
     % The old statement (whatever it was before this collision-driven unprepare was sent) is
     % still live on the wire since the Close never actually ran -- `prepared` must still
     % reflect that, not have already dropped it when the unprepare was merely dispatched.
