@@ -30,10 +30,13 @@
 
 -record #req{
     ref :: reference(),
+    statement_text :: unicode:chardata(),
     parameters :: pgc_connection_statem_extended_query:execute_parameters()
 }.
 
 -record #state{
+    types :: ets:table(),
+    refreshing_types :: boolean(),
     pending :: [#req{}]
 }.
 
@@ -279,13 +282,14 @@ rollback(Connection, Reason) ->
 
 -doc false.
 init([]) ->
-    {ok, #state{pending = []}}.
+    {ok, #state{types = pgc_client_types:new(), refreshing_types = false, pending = []}}.
 
 -doc false.
 handle_cast(_ConnectionInfo, {execute, Ref, StatementText, Parameters}, State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
+        statement_text = StatementText,
         parameters = [{text, Parameter} || Parameter <- Parameters]
     },
     {[{prepare, ~"", StatementText}], State#state{pending = Pending ++ [Req]}};
@@ -293,6 +297,7 @@ handle_cast(_ConnectionInfo, {query, Ref, StatementText}, State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
+        statement_text = StatementText,
         parameters = []
     },
     {[{query, StatementText}], State#state{pending = Pending ++ [Req]}};
@@ -304,9 +309,20 @@ handle_cast(_ConnectionInfo, {cancel, Ref}, State) ->
     end.
 
 -doc false.
-handle_prepare_result(_ConnectionInfo, {ok, Name, _StatementDescription}, State) ->
-    #state{pending = [Req | _]} = State,
-    {[{execute, Name, Req#req.parameters, #{}}], State};
+handle_prepare_result(_ConnectionInfo, {ok, Name, StatementDescription}, State) ->
+    #state{pending = [Req | Pending], types = Types} = State,
+    #{parameters_description := ParameterOids, row_description := RowFields} = StatementDescription,
+    NeededOids = ParameterOids ++ [Field#row_description_field.type_oid || Field <- RowFields],
+    case lists:all(fun (Oid) -> pgc_client_types:member(Types, Oid) end, NeededOids) of
+        true ->
+            {[{execute, Name, Req#req.parameters, #{}}], State#state{pending = [Req | Pending]}};
+        false ->
+            % Some of the types this statement needs aren't cached yet -- refresh, then
+            % re-prepare (the unnamed statement doesn't survive the refresh's own Query
+            % message) once we're back.
+            {[{query, refresh_statement_text()}, {prepare, ~"", Req#req.statement_text}],
+                State#state{pending = [Req | Pending], refreshing_types = true}}
+    end;
 handle_prepare_result(_ConnectionInfo, {error, Fields}, State) ->
     #state{pending = [Req | Pending]} = State,
     Req#req.ref ! {done, Req#req.ref, {error, Fields}},
@@ -314,13 +330,22 @@ handle_prepare_result(_ConnectionInfo, {error, Fields}, State) ->
 
 -doc false.
 handle_row_data(_ConnectionInfo, RowDescription, Values, State) ->
-    #state{pending = [Req | _]} = State,
-    Req#req.ref ! {row, Req#req.ref, RowDescription, Values},
-    {[], State}.
+    case State#state.refreshing_types of
+        true ->
+            ok = pgc_client_types:insert_row(State#state.types, Values),
+            {[], State};
+        false ->
+            #state{pending = [Req | _]} = State,
+            Req#req.ref ! {row, Req#req.ref, RowDescription, Values},
+            {[], State}
+    end.
 
 -doc false.
 handle_query_result(ConnectionInfo, Result, State) ->
-    handle_execute_result(ConnectionInfo, Result, State).
+    case State#state.refreshing_types of
+        true -> {[], State#state{refreshing_types = false}};
+        false -> handle_execute_result(ConnectionInfo, Result, State)
+    end.
 
 -doc false.
 handle_execute_result(_ConnectionInfo, Result, State) ->
@@ -341,6 +366,7 @@ format_row(tuple, _Fields, Values) ->
     list_to_tuple(Values);
 format_row(proplist, Fields, Values) ->
     lists:zip([Field#row_description_field.name || Field <- Fields], Values).
+
 
 -spec decode_tag(undefined) -> #{};
                  (unicode:unicode_binary()) -> #{command := binary(), rows => non_neg_integer()}.
@@ -367,3 +393,24 @@ decode_tag(Tag) ->
         _ ->
             #{command => string:lowercase(Tag)}
     end.
+
+
+refresh_statement_text() ->
+     ~"""
+        select
+            pg_type.oid as oid,
+            pg_type.typname as name,
+            pg_type.typtype as kind,
+            pg_type.typreceive as recv,
+            pg_type.typsend as send,
+            pg_type.typelem as element,
+            array(
+                select pg_attribute.attname || ':' || pg_attribute.atttypid
+                from pg_attribute
+                where pg_attribute.attrelid = pg_type.typrelid
+                and pg_attribute.attnum > 0
+                and not pg_attribute.attisdropped
+                order by pg_attribute.attnum
+            ) as fields
+        from pg_catalog.pg_type
+    """.

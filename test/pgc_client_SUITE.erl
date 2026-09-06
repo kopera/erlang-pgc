@@ -19,6 +19,8 @@
     execute_timeout_cancels_query_test/1,
     execute_streams_rows_test/1,
     execute_halt_cancels_query_test/1,
+    execute_resolves_types_across_statements_test/1,
+    execute_resolves_type_created_mid_session_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
     transaction_exception_rolls_back_test/1
@@ -76,6 +78,8 @@ groups() ->
             execute_timeout_cancels_query_test,
             execute_streams_rows_test,
             execute_halt_cancels_query_test,
+            execute_resolves_types_across_statements_test,
+            execute_resolves_type_created_mid_session_test,
             transaction_commit_test,
             transaction_rollback_test,
             transaction_exception_rolls_back_test
@@ -163,6 +167,28 @@ execute_halt_cancels_query_test(Config) ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),
     ?assert(Time < 2_000_000),
+
+    ok = pgc_client:stop(Connection).
+
+execute_resolves_types_across_statements_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % A connection's type cache starts empty, so the first execute always exercises the
+    % refresh-and-retry path; a second, differently-typed one right after must also succeed.
+    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", []),
+    {ok, _, [#{<<"t">> := <<"hi">>}]} = pgc_client:execute(Connection, "select 'hi'::text as t", []),
+
+    ok = pgc_client:stop(Connection).
+
+execute_resolves_type_created_mid_session_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % Warm the cache before the type below exists, so referencing it later can only succeed
+    % if a miss triggers a fresh refresh rather than relying on a one-time startup snapshot.
+    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", []),
+
+    {ok, _, []} = pgc_client:execute(Connection, "create type mood as enum ('sad', 'ok', 'happy')", []),
+    {ok, _, [#{<<"m">> := <<"happy">>}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", []),
 
     ok = pgc_client:stop(Connection).
 
