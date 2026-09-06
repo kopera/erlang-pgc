@@ -28,6 +28,7 @@
     execute_enum_decode_option_test/1,
     execute_domain_decodes_as_base_type_test/1,
     execute_range_and_multirange_round_trip_test/1,
+    execute_json_round_trip_test/1,
     execute_codecs_module_override_test/1,
     execute_missing_codec_crashes_connection_test/1,
     transaction_commit_test/1,
@@ -94,6 +95,7 @@ groups() ->
             execute_enum_decode_option_test,
             execute_domain_decodes_as_base_type_test,
             execute_range_and_multirange_round_trip_test,
+            execute_json_round_trip_test,
             execute_codecs_module_override_test,
             execute_missing_codec_crashes_connection_test,
             transaction_commit_test,
@@ -287,6 +289,14 @@ execute_range_and_multirange_round_trip_test(Config) ->
 
     {ok, _, [#{<<"m">> := [#{lower := {inclusive, 1}, upper := {exclusive, 5}}, #{lower := {inclusive, 10}, upper := {exclusive, 20}}]}]} =
         pgc_client:execute(Connection, "select int4multirange(int4range(1, 5), int4range(10, 20)) as m", []),
+
+    ok = pgc_client:stop(Connection).
+
+execute_json_round_trip_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, [#{<<"j">> := #{<<"a">> := 1}}]} = pgc_client:execute(Connection, "select $1::json as j", [#{a => 1}]),
+    {ok, _, [#{<<"j">> := #{<<"a">> := 1}}]} = pgc_client:execute(Connection, "select $1::jsonb as j", [#{a => 1}]),
 
     ok = pgc_client:stop(Connection).
 

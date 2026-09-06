@@ -27,7 +27,7 @@
     void_send/3, void_recv/3,
     xid8send/3, xid8recv/3,
     bit_send/3, bit_recv/3, varbit_send/3, varbit_recv/3,
-    ltree_send/3, ltree_recv/3, lquery_send/3, lquery_recv/3,
+    ltree_send/3, ltreesend/3, ltree_recv/3, ltreerecv/3, lquery_send/3, lquery_recv/3,
     hstore_send/3, hstore_recv/3,
     interval_send/3, interval_recv/3,
     enum_send/3, enum_recv/3,
@@ -258,7 +258,11 @@ varbit_recv(V, T, C) -> bitstring_recv(V, T, C).
 ltree_send(Value, _TypeDescriptor, _Codecs) when is_binary(Value) -> <<1:8, Value/binary>>;
 ltree_send(Value, TypeDescriptor, Codecs) -> erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
 
+ltreesend(Value, TypeDescriptor, Codecs) -> ltree_send(Value, TypeDescriptor, Codecs).
+
 ltree_recv(<<1:8, Value/binary>>, _TypeDescriptor, _Codecs) -> Value.
+
+ltreerecv(Value, TypeDescriptor, Codecs) -> ltree_recv(Value, TypeDescriptor, Codecs).
 
 lquery_send(V, T, C) -> ltree_send(V, T, C).
 lquery_recv(V, T, C) -> ltree_recv(V, T, C).
@@ -331,6 +335,7 @@ of time and want it back as an atom rather than doing that conversion themselves
 enum_recv(Data, _TypeDescriptor, Codecs) ->
     case maps:get(decode, pgc_client_codec:options(enum, Codecs), binary) of
         binary -> Data;
+        % elp:ignore W0023 -- opt-in, caller-documented tradeoff (see -doc above)
         atom -> binary_to_atom(Data);
         existing_atom -> binary_to_existing_atom(Data)
     end.
@@ -424,21 +429,17 @@ timestamp_to_term(PGMicroSeconds, {system_time, Unit}) ->
 % ------------------------------------------------------------------------------
 
 -doc """
-Plugs in a JSON library via this call's `codecs => #{json => #{codec => Module}}` option
-(`Module:encode/1`/`Module:decode/1`) -- default is passthrough, i.e. the caller already deals
-in raw JSON text. `jsonb` only adds a leading version byte on the wire.
+Encodes/decodes through OTP's own `json` module by default, pass a
+`codecs => #{json => #{codec => Module}}` option to plug in something else
+instead (`Module:encode/1`/`Module:decode/1`, same contract `json` itself meets).
 """.
 json_send(Term, _TypeDescriptor, Codecs) ->
-    case maps:get(codec, pgc_client_codec:options(json, Codecs), undefined) of
-        undefined -> _ = iolist_size(Term), Term;
-        Module -> Module:encode(Term)
-    end.
+    Module = maps:get(codec, pgc_client_codec:options(json, Codecs), json),
+    Module:encode(Term).
 
 json_recv(Data, _TypeDescriptor, Codecs) ->
-    case maps:get(codec, pgc_client_codec:options(json, Codecs), undefined) of
-        undefined -> Data;
-        Module -> Module:decode(Data)
-    end.
+    Module = maps:get(codec, pgc_client_codec:options(json, Codecs), json),
+    Module:decode(Data).
 
 jsonb_send(Term, TypeDescriptor, Codecs) ->
     [1 | json_send(Term, TypeDescriptor, Codecs)].
