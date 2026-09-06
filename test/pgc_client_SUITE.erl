@@ -22,6 +22,8 @@
     execute_halt_cancels_query_test/1,
     execute_resolves_types_across_statements_test/1,
     execute_resolves_type_created_mid_session_test/1,
+    execute_cache_reuses_prepared_statement_test/1,
+    execute_cache_reprepares_on_text_change_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
     transaction_exception_rolls_back_test/1
@@ -80,6 +82,8 @@ groups() ->
             execute_halt_cancels_query_test,
             execute_resolves_types_across_statements_test,
             execute_resolves_type_created_mid_session_test,
+            execute_cache_reuses_prepared_statement_test,
+            execute_cache_reprepares_on_text_change_test,
             transaction_commit_test,
             transaction_rollback_test,
             transaction_exception_rolls_back_test
@@ -211,6 +215,26 @@ execute_resolves_type_created_mid_session_test(Config) ->
 
     {ok, _, []} = pgc_client:execute(Connection, "create type mood as enum ('sad', 'ok', 'happy')", []),
     {ok, _, [#{<<"m">> := <<"happy">>}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", []),
+
+    ok = pgc_client:stop(Connection).
+
+execute_cache_reuses_prepared_statement_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % Same cache key, same text, twice -- the second call should hit the cached statement
+    % (skip parse/describe) and still return correct results.
+    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select $1::int4 as n", [<<"1">>], #{cache => {true, my_statement}}),
+    {ok, _, [#{<<"n">> := <<"2">>}]} = pgc_client:execute(Connection, "select $1::int4 as n", [<<"2">>], #{cache => {true, my_statement}}),
+
+    ok = pgc_client:stop(Connection).
+
+execute_cache_reprepares_on_text_change_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    % Reusing the same cache key with different text must close and re-prepare under that
+    % name rather than executing stale SQL against it.
+    {ok, _, [#{<<"n">> := <<"1">>}]} = pgc_client:execute(Connection, "select 1 as n", [], #{cache => {true, my_statement}}),
+    {ok, _, [#{<<"m">> := <<"2">>}]} = pgc_client:execute(Connection, "select 2 as m", [], #{cache => {true, my_statement}}),
 
     ok = pgc_client:stop(Connection).
 
