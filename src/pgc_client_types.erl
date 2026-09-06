@@ -11,7 +11,7 @@
     t/0
 ]).
 
--type t() :: ets:table().
+-opaque t() :: ets:table().
 
 -type id() :: pgc_protocol:oid().
 -type kind() :: base | composite | domain | enum | pseudo | range | multirange | other.
