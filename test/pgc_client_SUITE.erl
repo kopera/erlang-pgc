@@ -43,8 +43,6 @@ suite() ->
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(pgc),
     {ok, _} = application:ensure_all_started(erlexec),
-    % See pgc_connection_SUITE:init_per_suite/1 for why this is needed on a plain
-    % `erl` test node (OTP 29 native cross-module records + lazy code loading).
     {ok, Modules} = application:get_key(pgc, modules),
     lists:foreach(fun code:ensure_loaded/1, Modules),
     Config.
@@ -143,7 +141,7 @@ execute_timeout_cancels_query_test(Config) ->
 execute_streams_rows_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
-    Fun = fun (_RowDescription, [N], Acc) -> {cont, [N | Acc]} end,
+    Fun = fun (_RowDescription, [N], Acc) -> {continue, [N | Acc]} end,
     {ok, Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 5) as n", [], Fun, [], #{}),
     ?assertMatch(#{command := ~"select", rows := 5}, Metadata),
     ?assertEqual([<<"5">>, <<"4">>, <<"3">>, <<"2">>, <<"1">>], Values),
@@ -156,7 +154,7 @@ execute_halt_cancels_query_test(Config) ->
     Fun = fun (_RowDescription, [N], Acc) ->
         case N of
             <<"3">> -> {halt, [N | Acc]};
-            _ -> {cont, [N | Acc]}
+            _ -> {continue, [N | Acc]}
         end
     end,
     {ok, _Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 1000000) as n", [], Fun, [], #{}),

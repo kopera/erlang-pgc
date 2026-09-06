@@ -12,7 +12,9 @@
     connection_name/0,
     connection_ref/0,
     connection_info/0,
-    row_description/0
+    row_description/0,
+    execute_parameters/0,
+    execute_options/0
 ]).
 
 -define(DEFAULT_PING_INTERVAL, 5000).
@@ -157,10 +159,12 @@ The connection is about to stop. No further callbacks follow.
     {query, Text :: unicode:chardata()}
     | {prepare, Name :: unicode:chardata(), Text :: unicode:chardata()}
     | {unprepare, Name :: unicode:chardata()}
-    | {execute, Name :: unicode:chardata(), Parameters :: pgc_connection_statem_extended_query:execute_parameters(), Options :: pgc_connection_statem_extended_query:execute_options()}
+    | {execute, Name :: unicode:chardata(), Parameters :: execute_parameters(), Options :: execute_options()}
     | {reply, gen_statem:from(), Reply :: term()}
     | cancel.
 
+-type execute_parameters() :: pgc_connection_statem_extended_query:execute_parameters().
+-type execute_options() :: pgc_connection_statem_extended_query:execute_options().
 
 % -----------------------------------------------------------------------------
 % API

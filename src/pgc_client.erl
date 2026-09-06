@@ -31,11 +31,11 @@
 -record #req{
     ref :: reference(),
     statement_text :: unicode:chardata(),
-    parameters :: pgc_connection_statem_extended_query:execute_parameters()
+    parameters :: pgc_connection:execute_parameters()
 }.
 
 -record #state{
-    types :: ets:table(),
+    types :: pgc_client_types:t(),
     refreshing_types :: boolean(),
     pending :: [#req{}]
 }.
@@ -116,7 +116,7 @@ execute(Connection, StatementText, Parameters, Options) ->
     RowFormat = maps:get(row, Options, map),
     RemainingOptions = maps:without([row], Options),
     case execute(Connection, StatementText, Parameters, fun (RowDescription, Values, Acc) ->
-        {cont, [format_row(RowFormat, RowDescription, Values) | Acc]}
+        {continue, [format_row(RowFormat, RowDescription, Values) | Acc]}
     end, [], RemainingOptions) of
         {ok, Metadata, Rows} ->
             {ok, Metadata, lists:reverse(Rows)};
@@ -133,13 +133,13 @@ cancels the query on the server; see `execute/4` for `Options`' `timeout` semant
     Connection :: pgc_connection:connection_ref(),
     StatementText :: unicode:chardata(),
     Parameters :: parameters(),
-    Fun :: fun((pgc_connection:row_description(), [null | binary()], Acc) -> {cont, Acc} | {halt, Acc}),
+    Fun :: fun((pgc_connection:row_description(), [null | binary()], Acc) -> {continue, Acc} | {halt, Acc}),
     Options :: #{timeout => timeout()},
     Metadata :: result_metadata(),
     Error :: execute_error().
 execute(Connection, StatementText, Parameters, Fun, Acc, Options) ->
     Timeout = maps:get(timeout, Options, infinity),
-    run(Connection, fun (Ref) -> {execute, Ref, StatementText, Parameters} end, Fun, Acc, Timeout).
+    request(Connection, {execute, StatementText, Parameters}, Fun, Acc, Timeout).
 
 
 -doc """
@@ -153,15 +153,15 @@ Used internally for `commit`, `rollback` and `start transaction`.
     Rows :: [term()],
     Error :: pgc_protocol_message:error_response_fields().
 execute_simple(Connection, StatementText) ->
-    Fun = fun (_RowDescription, _Values, Acc) -> {cont, Acc} end,
-    run(Connection, fun (Ref) -> {query, Ref, StatementText} end, Fun, [], infinity).
+    Fun = fun (_RowDescription, _Values, Acc) -> {continue, Acc} end,
+    request(Connection, {query, StatementText}, Fun, [], infinity).
 
 
 -doc false.
-run(Connection, Request, Fun, Acc, Timeout) ->
+request(Connection, Request, Fun, Acc, Timeout) ->
     Ref = erlang:monitor(process, Connection, [{alias, demonitor}]),
     try
-        ok = pgc_connection:cast(Connection, Request(Ref)),
+        ok = pgc_connection:cast(Connection, {request, Ref, Request}),
         collect(Connection, Ref, Fun, Acc, pgc_deadline:from_timeout(Timeout))
     after
         erlang:demonitor(Ref, [flush])
@@ -172,7 +172,7 @@ collect(Connection, Ref, Fun, Acc, Deadline) ->
     receive
         {row, Ref, RowDescription, Values} ->
             case Fun(RowDescription, Values, Acc) of
-                {cont, Acc1} ->
+                {continue, Acc1} ->
                     collect(Connection, Ref, Fun, Acc1, Deadline);
                 {halt, Acc1} ->
                     ok = pgc_connection:cast(Connection, {cancel, Ref}),
@@ -276,6 +276,7 @@ transaction_option(Key, Options, Mapping) ->
 rollback(Connection, Reason) ->
     throw({?MODULE, rollback, Connection, Reason}).
 
+
 % -----------------------------------------------------------------------------
 % pgc_connection behaviour
 % -----------------------------------------------------------------------------
@@ -284,55 +285,97 @@ rollback(Connection, Reason) ->
 init([]) ->
     {ok, #state{types = pgc_client_types:new(), refreshing_types = false, pending = []}}.
 
+
 -doc false.
-handle_cast(_ConnectionInfo, {execute, Ref, StatementText, Parameters}, State) ->
+handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Parameters}}, #state{} = State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
         statement_text = StatementText,
         parameters = [{text, Parameter} || Parameter <- Parameters]
     },
-    {[{prepare, ~"", StatementText}], State#state{pending = Pending ++ [Req]}};
-handle_cast(_ConnectionInfo, {query, Ref, StatementText}, State) ->
+    {[
+        {prepare, ~"", StatementText}
+    ], State#state{pending = Pending ++ [Req]}};
+
+handle_cast(_ConnectionInfo, {request, Ref, {query, StatementText}}, #state{} = State) ->
     #state{pending = Pending} = State,
     Req = #req{
         ref = Ref,
         statement_text = StatementText,
         parameters = []
     },
-    {[{query, StatementText}], State#state{pending = Pending ++ [Req]}};
-handle_cast(_ConnectionInfo, {cancel, Ref}, State) ->
+    {[
+        {query, StatementText}
+    ], State#state{pending = Pending ++ [Req]}};
+
+handle_cast(_ConnectionInfo, {cancel, Ref}, #state{} = State) ->
     #state{pending = Pending} = State,
     case Pending of
         [#req{ref = Ref} | _] -> {[cancel], State};
         _ -> {[], State}
     end.
 
+
 -doc false.
 handle_prepare_result(_ConnectionInfo, {ok, Name, StatementDescription}, State) ->
     #state{pending = [Req | Pending], types = Types} = State,
     #{parameters_description := ParameterOids, row_description := RowFields} = StatementDescription,
     NeededOids = ParameterOids ++ [Field#row_description_field.type_oid || Field <- RowFields],
-    case lists:all(fun (Oid) -> pgc_client_types:member(Types, Oid) end, NeededOids) of
+    case lists:all(fun (Oid) -> pgc_client_types:has(Oid, Types) end, NeededOids) of
         true ->
             {[{execute, Name, Req#req.parameters, #{}}], State#state{pending = [Req | Pending]}};
         false ->
-            % Some of the types this statement needs aren't cached yet -- refresh, then
-            % re-prepare (the unnamed statement doesn't survive the refresh's own Query
-            % message) once we're back.
-            {[{query, refresh_statement_text()}, {prepare, ~"", Req#req.statement_text}],
+            % Some of the types this statement needs aren't cached yet -- refresh first;
+            % handle_query_result/3 below decides what to do once it's actually done,
+            % rather than pre-committing to a re-prepare that a cancel can't then stop.
+            {[{query, refresh_statement_text()}],
                 State#state{pending = [Req | Pending], refreshing_types = true}}
     end;
+
 handle_prepare_result(_ConnectionInfo, {error, Fields}, State) ->
     #state{pending = [Req | Pending]} = State,
     Req#req.ref ! {done, Req#req.ref, {error, Fields}},
     {[], State#state{pending = Pending}}.
 
+
 -doc false.
 handle_row_data(_ConnectionInfo, RowDescription, Values, State) ->
     case State#state.refreshing_types of
         true ->
-            ok = pgc_client_types:insert_row(State#state.types, Values),
+            [Oid, Namespace, Name, Kind, Recv, Send, ElementType, ParentType, FieldNamesArray, FieldTypesArray] = Values,
+            TypeId = binary_to_integer(Oid),
+            ok = pgc_client_types:add(TypeId, #{
+                namespace => Namespace,
+                name => Name,
+                kind => case Kind of
+                    ~"b" -> base;
+                    ~"c" -> composite;
+                    ~"d" -> domain;
+                    ~"e" -> enum;
+                    ~"p" -> pseudo;
+                    ~"r" -> range;
+                    ~"m" -> multirange;
+                    _ -> other
+                end,
+                recv => Recv,
+                send => Send,
+                element => case ElementType of
+                    ~"0" -> undefined;
+                    _ -> binary_to_integer(ElementType)
+                end,
+                parent => case ParentType of
+                    ~"0" -> undefined;
+                    _ -> binary_to_integer(ParentType)
+                end,
+                fields => case FieldNamesArray of
+                    ~"{}" -> [];
+                    _ ->
+                        FieldNames = decode_array(FieldNamesArray),
+                        FieldTypes = [binary_to_integer(Type) || Type <- decode_array(FieldTypesArray)],
+                        lists:zip(FieldNames, FieldTypes)
+                end
+            }, State#state.types),
             {[], State};
         false ->
             #state{pending = [Req | _]} = State,
@@ -343,8 +386,24 @@ handle_row_data(_ConnectionInfo, RowDescription, Values, State) ->
 -doc false.
 handle_query_result(ConnectionInfo, Result, State) ->
     case State#state.refreshing_types of
-        true -> {[], State#state{refreshing_types = false}};
-        false -> handle_execute_result(ConnectionInfo, Result, State)
+        true ->
+            #state{pending = [Req | Pending]} = State,
+            NewState = State#state{refreshing_types = false},
+            case Result of
+                {ok, _Tag} ->
+                    % Refresh actually completed -- now it's safe to retry the prepare
+                    % (the unnamed statement doesn't survive the refresh's own Query
+                    % message, hence re-preparing rather than resuming the old one).
+                    {[{prepare, ~"", Req#req.statement_text}], NewState};
+                {error, Fields} ->
+                    % Cancelled (or otherwise failed) mid-refresh -- abandon this request
+                    % the same way a cancel during a real execute already does, instead of
+                    % blindly retrying a prepare nobody's waiting on anymore.
+                    Req#req.ref ! {done, Req#req.ref, {error, Fields}},
+                    {[], NewState#state{pending = Pending}}
+            end;
+        false ->
+            handle_execute_result(ConnectionInfo, Result, State)
     end.
 
 -doc false.
@@ -394,23 +453,107 @@ decode_tag(Tag) ->
             #{command => string:lowercase(Tag)}
     end.
 
+decode_array(<<"{}">>) ->
+    [];
+decode_array(<<"{", Rest/binary>>) ->
+    decode_array_(Rest).
+
+decode_array_(Bin) ->
+    case decode_array_element(Bin) of
+        {Element, ~"}"} -> [Element];
+        {Element, <<",", Tail/binary>>} -> [Element | decode_array_(Tail)]
+    end.
+
+decode_array_element(<<"\"", Rest/binary>>) ->
+    decode_array_element_quoted(Rest, <<>>);
+decode_array_element(Bin) ->
+    decode_array_element_unquoted(Bin, <<>>).
+
+%% Extract a quoted element
+decode_array_element_quoted(<<"\"", Rest/binary>>, Acc) ->
+    {Acc, Rest}; % Return the element and whatever binary is left
+decode_array_element_quoted(<<"\\", Char, Rest/binary>>, Acc) ->
+    decode_array_element_quoted(Rest, <<Acc/binary, Char>>);
+decode_array_element_quoted(<<Char, Rest/binary>>, Acc) ->
+    decode_array_element_quoted(Rest, <<Acc/binary, Char>>).
+
+%% Extract an unquoted element
+decode_array_element_unquoted(<<"}", _/binary>> = Rest, Acc) ->
+    {Acc, Rest};
+decode_array_element_unquoted(<<",", _/binary>> = Rest, Acc) ->
+    {Acc, Rest};
+decode_array_element_unquoted(<<Char, Rest/binary>>, Acc) ->
+    decode_array_element_unquoted(Rest, <<Acc/binary, Char>>).
+
 
 refresh_statement_text() ->
      ~"""
         select
             pg_type.oid as oid,
+            pg_namespace.nspname as namespace,
             pg_type.typname as name,
-            pg_type.typtype as kind,
-            pg_type.typreceive as recv,
+            pg_type.typtype as type,
             pg_type.typsend as send,
-            pg_type.typelem as element,
-            array(
-                select pg_attribute.attname || ':' || pg_attribute.atttypid
+            pg_type.typreceive as recv,
+            pg_type.typelem as element_type,
+            coalesce(pg_range.rngsubtype, 0) as parent_type,
+            array (
+                select pg_attribute.attname
                 from pg_attribute
                 where pg_attribute.attrelid = pg_type.typrelid
                 and pg_attribute.attnum > 0
                 and not pg_attribute.attisdropped
                 order by pg_attribute.attnum
-            ) as fields
+            ) as fields_names,
+            array (
+                select pg_attribute.atttypid
+                from pg_attribute
+                where pg_attribute.attrelid = pg_type.typrelid
+                and pg_attribute.attnum > 0
+                and not pg_attribute.attisdropped
+                order by pg_attribute.attnum
+            ) as fields_types
         from pg_catalog.pg_type
+        left join pg_catalog.pg_range on pg_range.rngtypid = pg_type.oid
+        left join pg_catalog.pg_namespace on pg_namespace.oid = pg_type.typnamespace
     """.
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+-doc """
+A cancel landing while a types-refresh is in flight aborts the refresh (not the caller's
+actual statement, which hasn't been re-issued yet) -- this should abandon the request the
+same way a cancel during a real execute does, not blindly retry the prepare nobody's
+waiting on anymore.
+""".
+handle_query_result_refresh_cancelled_test() ->
+    % A plain make_ref/0 isn't a valid send target, and monitoring self() doesn't mint a
+    % working alias either -- mirror `run/5`'s production pattern of monitoring some *other*
+    % process, so `Req#req.ref ! Message` has a real alias to deliver into this mailbox.
+    Standin = spawn(fun () -> receive stop -> ok end end),
+    Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
+    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = []},
+    State = #state{types = pgc_client_types:new(), refreshing_types = true, pending = [Req]},
+    {Actions, NewState} = handle_query_result(#{}, {error, #{}}, State),
+    ?assertEqual([], Actions),
+    ?assertEqual(false, NewState#state.refreshing_types),
+    ?assertEqual([], NewState#state.pending),
+    ?assertEqual({done, Ref, {error, #{}}}, receive Message -> Message after 0 -> timeout end),
+    erlang:demonitor(Ref, [flush]),
+    Standin ! stop.
+
+-doc """
+A refresh that actually completes retries the prepare, since the unnamed statement doesn't
+survive the refresh's own Query message.
+""".
+handle_query_result_refresh_succeeded_test() ->
+    Ref = make_ref(),
+    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = []},
+    State = #state{types = pgc_client_types:new(), refreshing_types = true, pending = [Req]},
+    {Actions, NewState} = handle_query_result(#{}, {ok, ~"SELECT 1"}, State),
+    ?assertEqual([{prepare, ~"", ~"select 1"}], Actions),
+    ?assertEqual(false, NewState#state.refreshing_types),
+    ?assertEqual([Req], NewState#state.pending).
+-endif.
