@@ -653,7 +653,7 @@ refresh_statement_text() ->
                 order by pg_attribute.attnum
             ) as fields_types
         from pg_catalog.pg_type
-        left join pg_catalog.pg_range on pg_range.rngtypid = pg_type.oid
+        left join pg_catalog.pg_range on pg_range.rngtypid = pg_type.oid or pg_range.rngmultitypid = pg_type.oid
         left join pg_catalog.pg_namespace on pg_namespace.oid = pg_type.typnamespace
     """.
 

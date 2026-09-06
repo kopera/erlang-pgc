@@ -27,6 +27,7 @@
     execute_array_round_trip_test/1,
     execute_enum_decode_option_test/1,
     execute_domain_decodes_as_base_type_test/1,
+    execute_range_and_multirange_round_trip_test/1,
     execute_missing_codec_crashes_connection_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
@@ -91,6 +92,7 @@ groups() ->
             execute_array_round_trip_test,
             execute_enum_decode_option_test,
             execute_domain_decodes_as_base_type_test,
+            execute_range_and_multirange_round_trip_test,
             execute_missing_codec_crashes_connection_test,
             transaction_commit_test,
             transaction_rollback_test,
@@ -269,6 +271,20 @@ execute_domain_decodes_as_base_type_test(Config) ->
     % transparently as a plain int4, with no domain-specific codec involved.
     {ok, _, []} = pgc_client:execute(Connection, "create domain positive_int as int4 check (value > 0)", []),
     {ok, _, [#{<<"p">> := 5}]} = pgc_client:execute(Connection, "select 5::positive_int as p", []),
+
+    ok = pgc_client:stop(Connection).
+
+execute_range_and_multirange_round_trip_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, [#{<<"r">> := #{lower := {inclusive, 1}, upper := {exclusive, 10}}}]} =
+        pgc_client:execute(Connection, "select int4range(1, 10) as r", []),
+    {ok, _, [#{<<"r">> := empty}]} = pgc_client:execute(Connection, "select int4range(1, 1) as r", []),
+    {ok, _, [#{<<"r">> := #{lower := unbound, upper := {exclusive, 10}}}]} =
+        pgc_client:execute(Connection, "select int4range(null, 10) as r", []),
+
+    {ok, _, [#{<<"m">> := [#{lower := {inclusive, 1}, upper := {exclusive, 5}}, #{lower := {inclusive, 10}, upper := {exclusive, 20}}]}]} =
+        pgc_client:execute(Connection, "select int4multirange(int4range(1, 5), int4range(10, 20)) as m", []),
 
     ok = pgc_client:stop(Connection).
 

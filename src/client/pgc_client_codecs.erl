@@ -97,7 +97,9 @@ default_codec_modules() ->
         pgc_client_codec_timetz,
         pgc_client_codec_timestamp,
         pgc_client_codec_void,
-        pgc_client_codec_xid8
+        pgc_client_codec_xid8,
+        pgc_client_codec_range,
+        pgc_client_codec_multirange
     ].
 
 default_codecs() ->
