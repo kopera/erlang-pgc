@@ -1,15 +1,10 @@
 -module(pgc_client_codec_array).
 -moduledoc false.
 
--behaviour(pgc_client_codec).
 -export([
-    names/0,
     encode/3,
     decode/3
 ]).
-
-names() ->
-    [~"array_send", ~"array_recv", ~"int2vectorsend", ~"int2vectorrecv", ~"oidvectorsend", ~"oidvectorrecv"].
 
 encode(List, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Codecs) when is_list(List) ->
     {Flags, EncodedElements} = encode_elements(ElementOid, Codecs, List),
@@ -48,7 +43,7 @@ lengths(Value, Acc) ->
     lists:reverse([length(Value) | Acc]).
 
 encode_elements(ElementOid, Codecs, Values) ->
-    {ok, ElementDescriptor} = pgc_client_codecs:lookup(ElementOid, Codecs),
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(ElementOid, Codecs),
     encode_elements(ElementDescriptor, Codecs, 0, lists:flatten(Values), []).
 
 encode_elements(_ElementDescriptor, _Codecs, Flags, [], Acc) ->
@@ -96,7 +91,7 @@ decode_lengths(Dims, Lengths, <<Length:32/signed-integer, LowerBound:32/signed-i
     decode_lengths(Dims - 1, [Length | Lengths], Rest).
 
 decode_elements(ElementOid, Codecs, Payload) ->
-    {ok, ElementDescriptor} = pgc_client_codecs:lookup(ElementOid, Codecs),
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(ElementOid, Codecs),
     decode_elements(ElementDescriptor, Codecs, Payload, []).
 
 decode_elements(_ElementDescriptor, _Codecs, <<>>, Acc) ->

@@ -1,18 +1,13 @@
 -module(pgc_client_codec_multirange).
 -moduledoc false.
 
--behaviour(pgc_client_codec).
 -export([
-    names/0,
     encode/3,
     decode/3
 ]).
 
-names() ->
-    [~"multirange_send", ~"multirange_recv"].
-
 encode(Ranges, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Codecs) when is_list(Ranges) ->
-    {ok, ElementDescriptor} = pgc_client_codecs:lookup(Parent, Codecs),
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, Codecs),
     [<<(length(Ranges)):32/signed-integer>> |
         [encode_range(Range, ElementDescriptor, Codecs) || Range <- Ranges]];
 encode(Value, TypeDescriptor, Codecs) ->
@@ -23,7 +18,7 @@ encode_range(Range, ElementDescriptor, Codecs) ->
     [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded].
 
 decode(<<Count:32/signed-integer, Data/binary>>, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Codecs) ->
-    {ok, ElementDescriptor} = pgc_client_codecs:lookup(Parent, Codecs),
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, Codecs),
     decode_ranges(Count, Data, ElementDescriptor, Codecs, []).
 
 decode_ranges(0, <<>>, _ElementDescriptor, _Codecs, Acc) ->

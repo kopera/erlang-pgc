@@ -1,9 +1,7 @@
 -module(pgc_client_codec_range).
 -moduledoc false.
 
--behaviour(pgc_client_codec).
 -export([
-    names/0,
     encode/3,
     decode/3,
     encode_range/3,
@@ -23,15 +21,12 @@
 -define(lb_infinite, 16#08).
 -define(ub_infinite, 16#10).
 
-names() ->
-    [~"range_send", ~"range_recv"].
-
 encode(Range, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Codecs) ->
-    {ok, ElementDescriptor} = pgc_client_codecs:lookup(Parent, Codecs),
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, Codecs),
     encode_range(Range, ElementDescriptor, Codecs).
 
 decode(Data, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Codecs) ->
-    {ok, ElementDescriptor} = pgc_client_codecs:lookup(Parent, Codecs),
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, Codecs),
     {Range, <<>>} = decode_range(Data, ElementDescriptor, Codecs),
     Range.
 
@@ -41,7 +36,7 @@ decode(Data, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Code
 % like this (flag byte + optional length-prefixed bounds), one after another.
 % ------------------------------------------------------------------------------
 
--spec encode_range(range(), pgc_client_types:descriptor(), pgc_client_codecs:t()) -> iodata().
+-spec encode_range(range(), pgc_client_types:descriptor(), pgc_client_codec:t()) -> iodata().
 encode_range(empty, _ElementDescriptor, _Codecs) ->
     <<?empty:8>>;
 encode_range(#{lower := Lower, upper := Upper}, ElementDescriptor, Codecs) ->
@@ -63,7 +58,7 @@ encode_bound_value(Value, ElementDescriptor, Codecs) ->
     [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded].
 
 
--spec decode_range(binary(), pgc_client_types:descriptor(), pgc_client_codecs:t()) -> {range(), binary()}.
+-spec decode_range(binary(), pgc_client_types:descriptor(), pgc_client_codec:t()) -> {range(), binary()}.
 decode_range(<<Flags:8, Rest/binary>>, _ElementDescriptor, _Codecs) when Flags band ?empty =/= 0 ->
     {empty, Rest};
 decode_range(<<Flags:8, Rest/binary>>, ElementDescriptor, Codecs) ->
