@@ -11,9 +11,9 @@
 names() ->
     [~"textsend", ~"textrecv", ~"varcharsend", ~"varcharrecv", ~"bpcharsend", ~"bpcharrecv", ~"citextsend", ~"citextrecv"].
 
-encode(Value, _TypeDescriptor, _Types) ->
+encode(Value, _TypeDescriptor, _Codecs) ->
     _ = iolist_size(Value),
     Value.
 
-decode(Data, _TypeDescriptor, _Types) ->
+decode(Data, _TypeDescriptor, _Codecs) ->
     Data.

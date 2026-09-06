@@ -11,16 +11,16 @@
 names() ->
     [~"array_send", ~"array_recv", ~"int2vectorsend", ~"int2vectorrecv", ~"oidvectorsend", ~"oidvectorrecv"].
 
-encode(List, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Types) when is_list(List) ->
-    {Flags, EncodedElements} = encode_elements(ElementOid, Types, List),
+encode(List, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Codecs) when is_list(List) ->
+    {Flags, EncodedElements} = encode_elements(ElementOid, Codecs, List),
     [encode_header(ElementOid, Flags, List) | EncodedElements];
-encode(Value, TypeDescriptor, Types) ->
-    erlang:error(badarg, [Value, TypeDescriptor, Types]).
+encode(Value, TypeDescriptor, Codecs) ->
+    erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
 
 
-decode(Data, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Types) ->
+decode(Data, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Codecs) ->
     {Lengths, _Flags, ElementOid, Rest} = decode_header(Data),
-    Elements = decode_elements(ElementOid, Types, Rest),
+    Elements = decode_elements(ElementOid, Codecs, Rest),
     unflatten(Lengths, Elements).
 
 
@@ -47,20 +47,20 @@ lengths([H | _] = Value, Acc) when is_list(H) ->
 lengths(Value, Acc) ->
     lists:reverse([length(Value) | Acc]).
 
-encode_elements(ElementOid, Types, Values) ->
-    {ok, ElementDescriptor} = pgc_client_types:lookup(ElementOid, Types),
-    encode_elements(ElementDescriptor, Types, 0, lists:flatten(Values), []).
+encode_elements(ElementOid, Codecs, Values) ->
+    {ok, ElementDescriptor} = pgc_client_codecs:lookup(ElementOid, Codecs),
+    encode_elements(ElementDescriptor, Codecs, 0, lists:flatten(Values), []).
 
-encode_elements(_ElementDescriptor, _Types, Flags, [], Acc) ->
+encode_elements(_ElementDescriptor, _Codecs, Flags, [], Acc) ->
     {Flags, lists:reverse(Acc)};
-encode_elements(ElementDescriptor, Types, Flags, [Value | Rest], Acc) ->
-    {Flags1, Element} = encode_element(ElementDescriptor, Types, Flags, Value),
-    encode_elements(ElementDescriptor, Types, Flags1, Rest, [Element | Acc]).
+encode_elements(ElementDescriptor, Codecs, Flags, [Value | Rest], Acc) ->
+    {Flags1, Element} = encode_element(ElementDescriptor, Codecs, Flags, Value),
+    encode_elements(ElementDescriptor, Codecs, Flags1, Rest, [Element | Acc]).
 
-encode_element(_ElementDescriptor, _Types, Flags, null) ->
+encode_element(_ElementDescriptor, _Codecs, Flags, null) ->
     {Flags bor 1, <<-1:32/signed-integer>>};
-encode_element(ElementDescriptor, Types, Flags, Value) ->
-    Encoded = pgc_client_codec:encode(Value, ElementDescriptor, Types),
+encode_element(ElementDescriptor, Codecs, Flags, Value) ->
+    Encoded = pgc_client_codec:encode(Value, ElementDescriptor, Codecs),
     {Flags, [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded]}.
 
 
@@ -95,17 +95,17 @@ decode_lengths(Dims, Lengths, <<Length:32/signed-integer, LowerBound:32/signed-i
     1 = LowerBound,
     decode_lengths(Dims - 1, [Length | Lengths], Rest).
 
-decode_elements(ElementOid, Types, Payload) ->
-    {ok, ElementDescriptor} = pgc_client_types:lookup(ElementOid, Types),
-    decode_elements(ElementDescriptor, Types, Payload, []).
+decode_elements(ElementOid, Codecs, Payload) ->
+    {ok, ElementDescriptor} = pgc_client_codecs:lookup(ElementOid, Codecs),
+    decode_elements(ElementDescriptor, Codecs, Payload, []).
 
-decode_elements(_ElementDescriptor, _Types, <<>>, Acc) ->
+decode_elements(_ElementDescriptor, _Codecs, <<>>, Acc) ->
     lists:reverse(Acc);
-decode_elements(ElementDescriptor, Types, Data, Acc) ->
-    {Element, Rest} = decode_element(ElementDescriptor, Types, Data),
-    decode_elements(ElementDescriptor, Types, Rest, [Element | Acc]).
+decode_elements(ElementDescriptor, Codecs, Data, Acc) ->
+    {Element, Rest} = decode_element(ElementDescriptor, Codecs, Data),
+    decode_elements(ElementDescriptor, Codecs, Rest, [Element | Acc]).
 
-decode_element(_ElementDescriptor, _Types, <<-1:32/signed-integer, Rest/binary>>) ->
+decode_element(_ElementDescriptor, _Codecs, <<-1:32/signed-integer, Rest/binary>>) ->
     {null, Rest};
-decode_element(ElementDescriptor, Types, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>) ->
-    {pgc_client_codec:decode(Data, ElementDescriptor, Types), Rest}.
+decode_element(ElementDescriptor, Codecs, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>) ->
+    {pgc_client_codec:decode(Data, ElementDescriptor, Codecs), Rest}.

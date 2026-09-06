@@ -11,10 +11,10 @@
 names() ->
     [~"int2send", ~"int2recv"].
 
-encode(Value, _TypeDescriptor, _Types) when is_integer(Value), Value >= -32768, Value =< 32767 ->
+encode(Value, _TypeDescriptor, _Codecs) when is_integer(Value), Value >= -32768, Value =< 32767 ->
     <<Value:16/signed-integer>>;
-encode(Value, TypeDescriptor, Types) ->
-    erlang:error(badarg, [Value, TypeDescriptor, Types]).
+encode(Value, TypeDescriptor, Codecs) ->
+    erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
 
-decode(<<Value:16/signed-integer>>, _TypeDescriptor, _Types) ->
+decode(<<Value:16/signed-integer>>, _TypeDescriptor, _Codecs) ->
     Value.

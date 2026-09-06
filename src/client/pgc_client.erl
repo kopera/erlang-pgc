@@ -44,6 +44,7 @@
 
 -record #state{
     types :: pgc_client_types:t(),
+    codecs :: pgc_client_codecs:t(),
     requests :: #{reference() => #request{}},
     statements :: #{unicode:unicode_binary() => #statement{}}
 }.
@@ -176,7 +177,7 @@ execute_simple(Connection, StatementText) ->
 -doc """
 Encoding and decoding are deliberately done here, in the caller's own process, rather than in
 `handle_row_data/5`/`handle_prepare_result/4` (which run in the connection process): the
-connection is a shared, serializing bottleneck, while `Types` (`pgc_client_types:t()`) is a
+connection is a shared, serializing bottleneck, while `Codecs` (`pgc_client_codecs:t()`) wraps a
 `protected` ets table specifically so any number of callers can read it -- and therefore encode
 and decode -- concurrently, off the connection's own execution stack. The connection only ever
 mediates the wire and owns the (write side of the) type cache.
@@ -193,17 +194,17 @@ request(Connection, Request, Parameters, Options, Fun, Acc, Timeout) ->
 -doc false.
 collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline) ->
     receive
-        {encode_parameters, Ref, Name, ParametersDescription, Types} ->
+        {encode_parameters, Ref, Name, ParametersDescription, Codecs} ->
             % Sent exactly once, right after the statement's parameter oids become known
             % (fresh prepare or cache hit) -- encode locally, then hand the connection the
             % finished bytes so it can actually dispatch `execute`.
-            CallTypes = pgc_client_types:with_options(Types, maps:get(codecs, Options, #{})),
-            EncodedParameters = encode_parameters(ParametersDescription, Parameters, CallTypes),
+            CallCodecs = pgc_client_codecs:with_options(Codecs, maps:get(codecs, Options, #{})),
+            EncodedParameters = encode_parameters(ParametersDescription, Parameters, CallCodecs),
             ok = pgc_connection:cast(Connection, {parameters, Ref, Name, EncodedParameters}),
             collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline);
-        {row, Ref, RowDescription, Values, Types} ->
-            CallTypes = pgc_client_types:with_options(Types, maps:get(codecs, Options, #{})),
-            DecodedValues = decode_values(RowDescription, Values, CallTypes),
+        {row, Ref, RowDescription, Values, Codecs} ->
+            CallCodecs = pgc_client_codecs:with_options(Codecs, maps:get(codecs, Options, #{})),
+            DecodedValues = decode_values(RowDescription, Values, CallCodecs),
             case Fun(RowDescription, DecodedValues, Acc) of
                 {continue, Acc1} ->
                     collect(Connection, Ref, Parameters, Options, Fun, Acc1, Deadline);
@@ -224,20 +225,20 @@ collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline) ->
         exit({timeout, {?MODULE, execute, [Connection]}})
     end.
 
-encode_parameters(ParametersDescription, Parameters, Types) ->
+encode_parameters(ParametersDescription, Parameters, Codecs) ->
     [
-        {binary, pgc_client_codec:encode(Value, type_descriptor(Oid, Types), Types)}
+        {binary, pgc_client_codec:encode(Value, type_descriptor(Oid, Codecs), Codecs)}
         || {Oid, Value} <- lists:zip(ParametersDescription, Parameters)
     ].
 
-decode_values(RowDescription, Values, Types) ->
+decode_values(RowDescription, Values, Codecs) ->
     [
-        pgc_client_codec:decode(Value, type_descriptor(Field#row_description_field.type_oid, Types), Types)
+        pgc_client_codec:decode(Value, type_descriptor(Field#row_description_field.type_oid, Codecs), Codecs)
         || {Field, Value} <- lists:zip(RowDescription, Values)
     ].
 
-type_descriptor(Oid, Types) ->
-    {ok, Descriptor} = pgc_client_types:lookup(Oid, Types),
+type_descriptor(Oid, Codecs) ->
+    {ok, Descriptor} = pgc_client_codecs:lookup(Oid, Codecs),
     Descriptor.
 
 
@@ -331,8 +332,14 @@ rollback(Connection, Reason) ->
 % -----------------------------------------------------------------------------
 
 -doc false.
-init(Codecs) ->
-    {ok, #state{types = pgc_client_types:new(Codecs), requests = #{}, statements = #{}}}.
+init(ExtraCodecs) ->
+    Types = pgc_client_types:new(),
+    {ok, #state{
+        types = Types,
+        codecs = pgc_client_codecs:new(Types, ExtraCodecs),
+        requests = #{},
+        statements = #{}
+    }}.
 
 
 -doc false.
@@ -348,7 +355,7 @@ handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Options}}, 
             Hash = statement_hash(StatementText),
             case Statements of
                 #{Name := #statement{hash = Hash, parameters_description = ParametersDescription}} ->
-                    dispatch_execute(Ref, Name, ParametersDescription, State#state.types, NewState);
+                    dispatch_execute(Ref, Name, ParametersDescription, State#state.codecs, NewState);
                 #{Name := #statement{}} ->
                     % Different text under the same name -- close it first, but leave
                     % `Statements` alone until handle_unprepare_result/4 confirms the Close
@@ -400,7 +407,7 @@ handle_prepare_result(_ConnectionInfo, Ref, {ok, Name, StatementDescription}, St
     NewState = State#state{statements = Statements#{Name => CachedStatement}},
     case lists:all(fun (Oid) -> pgc_client_types:has(Oid, Types) end, NeededOids) of
         true ->
-            dispatch_execute(Ref, Name, ParametersDescription, Types, NewState);
+            dispatch_execute(Ref, Name, ParametersDescription, State#state.codecs, NewState);
         false ->
             % Missing types -- refresh first, reusing this request's Ref so a cancel still
             % reaches it. handle_query_result/4 picks up from there.
@@ -417,15 +424,15 @@ handle_prepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
 
 % No parameters -- nothing to hand off, dispatch directly. Otherwise the caller encodes its
 % own parameters (see collect/7), and this request is `awaiting_parameters` until it replies.
-dispatch_execute(Ref, Name, [], _Types, State) ->
+dispatch_execute(Ref, Name, [], _Codecs, State) ->
     #state{requests = Requests} = State,
     #{Ref := Req} = Requests,
     NewState = State#state{requests = Requests#{Ref => Req#request{phase = executing}}},
     {[{execute, Ref, Name, [], #{result_format => binary}}], NewState};
-dispatch_execute(Ref, Name, ParametersDescription, Types, State) ->
+dispatch_execute(Ref, Name, ParametersDescription, Codecs, State) ->
     #state{requests = Requests} = State,
     #{Ref := Req} = Requests,
-    Ref ! {encode_parameters, Ref, Name, ParametersDescription, Types},
+    Ref ! {encode_parameters, Ref, Name, ParametersDescription, Codecs},
     {[], State#state{requests = Requests#{Ref => Req#request{phase = awaiting_parameters}}}}.
 
 
@@ -493,7 +500,7 @@ handle_row_data(_ConnectionInfo, Ref, RowDescription, Values, State) ->
         executing ->
             % Decoding happens caller-side (see collect/7) -- just forward the raw wire
             % values plus the shared (protected, multi-reader) type cache they need.
-            Ref ! {row, Ref, RowDescription, Values, State#state.types},
+            Ref ! {row, Ref, RowDescription, Values, State#state.codecs},
             {[], State}
     end.
 
@@ -654,6 +661,10 @@ refresh_statement_text() ->
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
+test_state(Requests, Statements) ->
+    Types = pgc_client_types:new(),
+    #state{types = Types, codecs = pgc_client_codecs:new(Types), requests = Requests, statements = Statements}.
+
 -doc """
 A cancel landing while a types-refresh is in flight aborts the refresh (not the caller's
 actual statement, which hasn't been re-issued yet) -- this should abandon the request the
@@ -667,7 +678,7 @@ handle_query_result_refresh_cancelled_test() ->
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
     Req = #request{statement_text = ~"select 1", phase = refreshing_types},
-    State = #state{types = pgc_client_types:new(), requests = #{Ref => Req}, statements = #{}},
+    State = test_state(#{Ref => Req}, #{}),
     {Actions, NewState} = handle_query_result(#{}, Ref, {error, #{}}, State),
     ?assertEqual([], Actions),
     ?assertEqual(#{}, NewState#state.requests),
@@ -682,7 +693,7 @@ survive the refresh's own Query message.
 handle_query_result_refresh_succeeded_test() ->
     Ref = make_ref(),
     Req = #request{statement_text = ~"select 1", phase = refreshing_types},
-    State = #state{types = pgc_client_types:new(), requests = #{Ref => Req}, statements = #{}},
+    State = test_state(#{Ref => Req}, #{}),
     {Actions, NewState} = handle_query_result(#{}, Ref, {ok, ~"SELECT 1"}, State),
     ?assertEqual([{prepare, Ref, ~"", ~"select 1"}], Actions),
     ?assertEqual(#{Ref => Req#request{phase = preparing}}, NewState#state.requests).
@@ -701,7 +712,7 @@ handle_unprepare_result_cancelled_test() ->
     % still live on the wire since the Close never actually ran -- `prepared` must still
     % reflect that, not have already dropped it when the unprepare was merely dispatched.
     Cached = #statement{hash = ~"old-hash", parameters_description = [], row_description = []},
-    State = #state{types = pgc_client_types:new(), requests = #{Ref => Req}, statements = #{~"my_statement" => Cached}},
+    State = test_state(#{Ref => Req}, #{~"my_statement" => Cached}),
     {Actions, NewState} = handle_unprepare_result(#{}, Ref, {error, #{}}, State),
     ?assertEqual([], Actions),
     ?assertEqual(#{}, NewState#state.requests),

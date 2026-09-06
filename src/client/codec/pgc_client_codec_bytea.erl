@@ -11,9 +11,9 @@
 names() ->
     [~"byteasend", ~"bytearecv", ~"unknownsend", ~"unknownrecv"].
 
-encode(Value, _TypeDescriptor, _Types) ->
+encode(Value, _TypeDescriptor, _Codecs) ->
     _ = iolist_size(Value),
     Value.
 
-decode(Data, _TypeDescriptor, _Types) when is_binary(Data) ->
+decode(Data, _TypeDescriptor, _Codecs) when is_binary(Data) ->
     Data.

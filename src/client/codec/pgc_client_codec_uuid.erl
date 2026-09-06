@@ -11,10 +11,10 @@
 names() ->
     [~"uuid_send", ~"uuid_recv"].
 
-encode(<<_:128>> = Uuid, _TypeDescriptor, _Types) ->
+encode(<<_:128>> = Uuid, _TypeDescriptor, _Codecs) ->
     Uuid;
-encode(Value, TypeDescriptor, Types) ->
-    erlang:error(badarg, [Value, TypeDescriptor, Types]).
+encode(Value, TypeDescriptor, Codecs) ->
+    erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
 
-decode(<<_:128>> = Uuid, _TypeDescriptor, _Types) ->
+decode(<<_:128>> = Uuid, _TypeDescriptor, _Codecs) ->
     Uuid.

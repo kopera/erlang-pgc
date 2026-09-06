@@ -11,14 +11,14 @@
 names() ->
     [~"boolsend", ~"boolrecv"].
 
-encode(true, _TypeDescriptor, _Types) ->
+encode(true, _TypeDescriptor, _Codecs) ->
     <<1>>;
-encode(false, _TypeDescriptor, _Types) ->
+encode(false, _TypeDescriptor, _Codecs) ->
     <<0>>;
-encode(Value, TypeDescriptor, Types) ->
-    erlang:error(badarg, [Value, TypeDescriptor, Types]).
+encode(Value, TypeDescriptor, Codecs) ->
+    erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
 
-decode(<<1>>, _TypeDescriptor, _Types) ->
+decode(<<1>>, _TypeDescriptor, _Codecs) ->
     true;
-decode(<<0>>, _TypeDescriptor, _Types) ->
+decode(<<0>>, _TypeDescriptor, _Codecs) ->
     false.

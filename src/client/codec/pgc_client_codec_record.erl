@@ -11,10 +11,10 @@
 names() ->
     [~"record_send", ~"record_recv"].
 
-encode(Term, {_Oid, _Name, _Kind, _Recv, _Send, _Element, _Parent, FieldsDescription}, Types) ->
+encode(Term, {_Oid, _Name, _Kind, _Recv, _Send, _Element, _Parent, FieldsDescription}, Codecs) ->
     Fields = from_term(FieldsDescription, Term),
     FieldsCount = length(Fields),
-    [<<FieldsCount:32/integer>> | encode_fields(Fields, Types)].
+    [<<FieldsCount:32/integer>> | encode_fields(Fields, Codecs)].
 
 
 -doc """
@@ -23,9 +23,9 @@ the only mode for now (matching the field-name-keyed map a caller passes in on e
 an explicit option rather than hardcoded so a later mode (e.g. a positional tuple) doesn't need a
 new call shape.
 """.
-decode(<<_Count:32/integer, Payload/binary>>, {_Oid, _Name, _Kind, _Recv, _Send, _Element, _Parent, FieldsDescription}, Types) ->
-    map = maps:get(decode, pgc_client_types:codec_options(record, Types), map),
-    Fields = decode_fields(Payload, Types),
+decode(<<_Count:32/integer, Payload/binary>>, {_Oid, _Name, _Kind, _Recv, _Send, _Element, _Parent, FieldsDescription}, Codecs) ->
+    map = maps:get(decode, pgc_client_codecs:options(record, Codecs), map),
+    Fields = decode_fields(Payload, Codecs),
     to_term(FieldsDescription, Fields).
 
 
@@ -38,14 +38,14 @@ from_term(FieldsDescription, Map) when FieldsDescription =/= undefined, is_map(M
 from_term(FieldsDescription, Value) ->
     erlang:error(badarg, [FieldsDescription, Value]).
 
-encode_fields(Fields, Types) ->
-    [encode_field(Oid, FieldValue, Types) || {Oid, FieldValue} <- Fields].
+encode_fields(Fields, Codecs) ->
+    [encode_field(Oid, FieldValue, Codecs) || {Oid, FieldValue} <- Fields].
 
-encode_field(Oid, null, _Types) ->
+encode_field(Oid, null, _Codecs) ->
     <<Oid:32/integer, -1:32/signed-integer>>;
-encode_field(Oid, Value, Types) ->
-    {ok, Descriptor} = pgc_client_types:lookup(Oid, Types),
-    Encoded = pgc_client_codec:encode(Value, Descriptor, Types),
+encode_field(Oid, Value, Codecs) ->
+    {ok, Descriptor} = pgc_client_codecs:lookup(Oid, Codecs),
+    Encoded = pgc_client_codec:encode(Value, Descriptor, Codecs),
     [<<Oid:32/integer, (iolist_size(Encoded)):32/signed-integer>>, Encoded].
 
 
@@ -65,14 +65,14 @@ to_term(FieldsDescription, Fields) ->
     end, FieldsDescription, Fields),
     maps:from_list(TupleList).
 
-decode_fields(Data, Types) ->
-    decode_fields(Data, Types, []).
+decode_fields(Data, Codecs) ->
+    decode_fields(Data, Codecs, []).
 
-decode_fields(<<>>, _Types, Acc) ->
+decode_fields(<<>>, _Codecs, Acc) ->
     lists:reverse(Acc);
-decode_fields(<<Oid:32/integer, -1:32/signed-integer, Rest/binary>>, Types, Acc) ->
-    decode_fields(Rest, Types, [{Oid, null} | Acc]);
-decode_fields(<<Oid:32/integer, Size:32/signed-integer, FieldData:Size/binary, Rest/binary>>, Types, Acc) ->
-    {ok, Descriptor} = pgc_client_types:lookup(Oid, Types),
-    Value = pgc_client_codec:decode(FieldData, Descriptor, Types),
-    decode_fields(Rest, Types, [{Oid, Value} | Acc]).
+decode_fields(<<Oid:32/integer, -1:32/signed-integer, Rest/binary>>, Codecs, Acc) ->
+    decode_fields(Rest, Codecs, [{Oid, null} | Acc]);
+decode_fields(<<Oid:32/integer, Size:32/signed-integer, FieldData:Size/binary, Rest/binary>>, Codecs, Acc) ->
+    {ok, Descriptor} = pgc_client_codecs:lookup(Oid, Codecs),
+    Value = pgc_client_codec:decode(FieldData, Descriptor, Codecs),
+    decode_fields(Rest, Codecs, [{Oid, Value} | Acc]).
