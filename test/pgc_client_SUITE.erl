@@ -20,6 +20,7 @@
     execute_timeout_during_type_refresh_cancels_test/1,
     execute_streams_rows_test/1,
     execute_halt_cancels_query_test/1,
+    execute_caller_death_frees_connection_test/1,
     execute_resolves_types_across_statements_test/1,
     execute_resolves_type_created_mid_session_test/1,
     execute_cache_reuses_prepared_statement_test/1,
@@ -87,6 +88,7 @@ groups() ->
             execute_timeout_during_type_refresh_cancels_test,
             execute_streams_rows_test,
             execute_halt_cancels_query_test,
+            execute_caller_death_frees_connection_test,
             execute_resolves_types_across_statements_test,
             execute_resolves_type_created_mid_session_test,
             execute_cache_reuses_prepared_statement_test,
@@ -149,6 +151,13 @@ execute_timeout_cancels_query_test(Config) ->
 
     ?assertExit({timeout, _}, pgc_client:execute(Connection, "select pg_sleep(10)", [], #{timeout => 200})),
 
+    % The connection still sends a {done, Ref, _} for the now-cancelled request after this exits,
+    % but Ref is a `demonitor` alias (see request/7) that auto-deactivates the instant this exit
+    % unwinds through request/7's own `after` clause -- a late send to a dead alias is silently
+    % dropped, not queued, so nothing lands here even though this ?assertExit (unlike a plain
+    % uncaught exit) keeps this same mailbox around for whatever comes next.
+    ?assertNot(lists:any(fun ({done, _, _}) -> true; (_) -> false end, element(2, process_info(self(), messages)))),
+
     % If cancellation actually reached Postgres, the connection is free again almost
     % immediately -- without it, this would block for the remaining ~9.8s of the sleep.
     {Time, {ok, _, [#{<<"n">> := 1}]}} = timer:tc(fun () ->
@@ -203,6 +212,34 @@ execute_halt_cancels_query_test(Config) ->
     ?assertEqual([3, 2, 1], Values),
 
     % Cancellation should free the connection quickly rather than draining a million rows.
+    {Time, {ok, _, [#{<<"n">> := 1}]}} = timer:tc(fun () ->
+        pgc_client:execute(Connection, "select 1 as n", [])
+    end),
+    ?assert(Time < 2_000_000),
+
+    % The connection still sends a {done, Ref, _} for the now-cancelled request after this
+    % returns, but Ref is a `demonitor` alias (see request/7) that auto-deactivates the instant
+    % this returns and request/7's `after` clause runs -- a late send to a dead alias is silently
+    % dropped, not queued, so nothing is ever left here to leak into a long-lived caller's mailbox.
+    ?assertNot(lists:any(fun ({done, _, _}) -> true; (_) -> false end, element(2, process_info(self(), messages)))),
+
+    ok = pgc_client:stop(Connection).
+
+-doc """
+A caller that dies mid-request (not the polite cancel/timeout paths pgc_client itself drives)
+must not leak its request -- and whatever statement/portal it left in flight -- for the rest of
+the connection's life; the connection monitors its callers precisely so a dead one is treated
+like an implicit cancel.
+""".
+execute_caller_death_frees_connection_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    Caller = spawn(fun () -> pgc_client:execute(Connection, "select pg_sleep(10)", []) end),
+    timer:sleep(300),
+    exit(Caller, kill),
+
+    % Without the caller-death monitor, the abandoned request's cancel never gets sent, and this
+    % would block for the remaining ~9.7s of the sleep behind it.
     {Time, {ok, _, [#{<<"n">> := 1}]}} = timer:tc(fun () ->
         pgc_client:execute(Connection, "select 1 as n", [])
     end),

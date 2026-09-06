@@ -20,6 +20,7 @@
 -export([
     init/1,
     handle_cast/3,
+    handle_info/3,
     handle_prepare_result/4,
     handle_unprepare_result/4,
     handle_query_result/4,
@@ -33,7 +34,12 @@
 
 -record #request{
     statement_text :: unicode:chardata(),
-    phase :: request_phase()
+    phase :: request_phase(),
+    % Monitors the caller (not the other way around, see request/7's own monitor on the
+    % connection) so a caller that dies mid-request -- crashed, killed, not the polite
+    % cancel/timeout paths collect/7 itself drives -- is treated as an implicit cancel instead of
+    % leaking this entry (and its portal on the wire) for the rest of the connection's life.
+    monitor :: reference()
 }.
 
 -record #statement{
@@ -183,30 +189,35 @@ mediates the wire and owns the (write side of the) type cache; the caller builds
 request(Connection, Request, Parameters, Options, Fun, Acc, Timeout) ->
     Ref = erlang:monitor(process, Connection, [{alias, demonitor}]),
     try
-        ok = pgc_connection:cast(Connection, {request, Ref, Request}),
-        collect(Connection, Ref, Parameters, Options, Fun, Acc, pgc_deadline:from_timeout(Timeout))
+        ok = pgc_connection:cast(Connection, {request, Ref, self(), Request}),
+        collect(Connection, Ref, Parameters, Options, Fun, Acc, pgc_deadline:from_timeout(Timeout), undefined)
     after
         erlang:demonitor(Ref, [flush])
     end.
 
 -doc false.
-collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline) ->
+collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline, Codecs0) ->
     receive
         {encode_parameters, Ref, Name, ParametersDescription, Types} ->
             % Sent exactly once, right after the statement's parameter oids become known
             % (fresh prepare or cache hit) -- encode locally, then hand the connection the
             % finished bytes so it can actually dispatch `execute`.
-            Codecs = pgc_client_codec:new(Types, maps:get(codecs, Options, #{})),
+            Codecs = codecs(Codecs0, Types, Options),
             EncodedParameters = encode_parameters(ParametersDescription, Parameters, Codecs),
             ok = pgc_connection:cast(Connection, {parameters, Ref, Name, EncodedParameters}),
-            collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline);
+            collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline, Codecs);
         {row, Ref, RowDescription, Values, Types} ->
-            Codecs = pgc_client_codec:new(Types, maps:get(codecs, Options, #{})),
+            Codecs = codecs(Codecs0, Types, Options),
             DecodedValues = decode_values(RowDescription, Values, Codecs),
             case Fun(RowDescription, DecodedValues, Acc) of
                 {continue, Acc1} ->
-                    collect(Connection, Ref, Parameters, Options, Fun, Acc1, Deadline);
+                    collect(Connection, Ref, Parameters, Options, Fun, Acc1, Deadline, Codecs);
                 {halt, Acc1} ->
+                    % No need to wait for (or otherwise worry about) the {done, Ref, _} the
+                    % connection still sends for the now-cancelled request: Ref is a `demonitor`
+                    % alias (see request/7), which auto-deactivates the instant this returns and
+                    % request/7's `after` runs its erlang:demonitor/2 -- any send to a deactivated
+                    % alias is silently dropped, not queued, so nothing is left to leak.
                     ok = pgc_connection:cast(Connection, {cancel, Ref}),
                     {ok, #{}, Acc1}
             end;
@@ -219,9 +230,20 @@ collect(Connection, Ref, Parameters, Options, Fun, Acc, Deadline) ->
         {'DOWN', Ref, process, _, Reason} ->
             exit(Reason)
     after pgc_deadline:to_timeout(Deadline) ->
+        % Same reasoning as the {halt, _} branch above -- exit/1 unwinds straight through
+        % request/7's `after`, deactivating the alias before the connection could reply anyway.
         ok = pgc_connection:cast(Connection, {cancel, Ref}),
         exit({timeout, {?MODULE, execute, [Connection]}})
     end.
+
+% Types/Options don't change across one query's lifetime, so Codecs only needs building once,
+% lazily, on whichever of encode_parameters/row arrives first -- not reconstructed (and, since
+% pgc_client_codec:new/2 also sweeps the module list with code:ensure_loaded/1, re-checked) on
+% every single row of a large result set.
+codecs(undefined, Types, Options) ->
+    pgc_client_codec:new(Types, maps:get(codecs, Options, #{}));
+codecs(Codecs, _Types, _Options) ->
+    Codecs.
 
 encode_parameters(ParametersDescription, Parameters, Codecs) ->
     [
@@ -339,9 +361,10 @@ init(_Args) ->
 
 
 -doc false.
-handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Options}}, #state{} = State) ->
+% elp:ignore W0027 -- the {request, ...} cast tag coincides with the #request{} record name; unrelated
+handle_cast(_ConnectionInfo, {request, Ref, CallerPid, {execute, StatementText, Options}}, #state{} = State) ->
     #state{requests = Requests, statements = Statements} = State,
-    Req = #request{statement_text = StatementText, phase = preparing},
+    Req = #request{statement_text = StatementText, phase = preparing, monitor = erlang:monitor(process, CallerPid)},
     NewState = State#state{requests = Requests#{Ref => Req}},
     case maps:get(cache, Options, false) of
         false ->
@@ -363,9 +386,10 @@ handle_cast(_ConnectionInfo, {request, Ref, {execute, StatementText, Options}}, 
             end
     end;
 
-handle_cast(_ConnectionInfo, {request, Ref, {query, StatementText}}, #state{} = State) ->
+% elp:ignore W0027 -- the {request, ...} cast tag coincides with the #request{} record name; unrelated
+handle_cast(_ConnectionInfo, {request, Ref, CallerPid, {query, StatementText}}, #state{} = State) ->
     #state{requests = Requests} = State,
-    Req = #request{statement_text = StatementText, phase = querying},
+    Req = #request{statement_text = StatementText, phase = querying, monitor = erlang:monitor(process, CallerPid)},
     {[
         {query, Ref, StatementText}
     ], State#state{requests = Requests#{Ref => Req}}};
@@ -381,10 +405,26 @@ handle_cast(_ConnectionInfo, {cancel, Ref}, #state{requests = Requests} = State)
     % already given up -- it'll never send `{parameters, ...}`, so nothing else will ever remove
     % this entry. Drop it here instead of leaking it.
     NewRequests = case Requests of
-        #{Ref := #request{phase = awaiting_parameters}} -> maps:remove(Ref, Requests);
+        #{Ref := #request{phase = awaiting_parameters, monitor = Monitor}} ->
+            erlang:demonitor(Monitor, [flush]),
+            maps:remove(Ref, Requests);
         #{} -> Requests
     end,
     {[{cancel, Ref}], State#state{requests = NewRequests}}.
+
+
+-doc """
+The counterpart to the monitor `handle_cast/3` installs on a request's caller: a caller that dies
+mid-request (crashed, killed -- not the polite cancel/timeout paths `collect/7` itself drives)
+would otherwise leak its `#request{}` (and whatever portal/statement it left in flight on the
+wire) for the rest of the connection's life, since nothing else would ever remove it. Treated
+exactly like an explicit `{cancel, Ref}`.
+""".
+handle_info(ConnectionInfo, {'DOWN', MonitorRef, process, _Pid, _Reason}, #state{requests = Requests} = State) ->
+    case lists:search(fun ({_Ref, #request{monitor = M}}) -> M =:= MonitorRef end, maps:to_list(Requests)) of
+        {value, {Ref, _Req}} -> handle_cast(ConnectionInfo, {cancel, Ref}, State);
+        false -> {[], State}
+    end.
 
 
 -doc false.
@@ -413,7 +453,8 @@ handle_prepare_result(_ConnectionInfo, Ref, {ok, Name, StatementDescription}, St
 
 handle_prepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
     #state{requests = Requests} = State,
-    {_, NewRequests} = maps:take(Ref, Requests),
+    {Req, NewRequests} = maps:take(Ref, Requests),
+    erlang:demonitor(Req#request.monitor, [flush]),
     Ref ! {done, Ref, {error, Fields}},
     {[], State#state{requests = NewRequests}}.
 
@@ -449,7 +490,8 @@ handle_unprepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
     % Close didn't actually happen (a cancel beat it) -- the old statement is still live under
     % this name, so `Statements` is left untouched. Abandon the request like any other cancel.
     #state{requests = Requests} = State,
-    {_, NewRequests} = maps:take(Ref, Requests),
+    {Req, NewRequests} = maps:take(Ref, Requests),
+    erlang:demonitor(Req#request.monitor, [flush]),
     Ref ! {done, Ref, {error, Fields}},
     {[], State#state{requests = NewRequests}}.
 
@@ -518,6 +560,7 @@ handle_query_result(ConnectionInfo, Ref, Result, State) ->
                     % Cancelled (or otherwise failed) mid-refresh -- abandon this request
                     % the same way a cancel during a real execute already does, instead of
                     % blindly retrying a prepare nobody's waiting on anymore.
+                    erlang:demonitor(Req#request.monitor, [flush]),
                     Ref ! {done, Ref, {error, Fields}},
                     {[], State#state{requests = maps:remove(Ref, Requests)}}
             end;
@@ -528,7 +571,8 @@ handle_query_result(ConnectionInfo, Ref, Result, State) ->
 -doc false.
 handle_execute_result(_ConnectionInfo, Ref, Result, State) ->
     #state{requests = Requests} = State,
-    {_, NewRequests} = maps:take(Ref, Requests),
+    {Req, NewRequests} = maps:take(Ref, Requests),
+    erlang:demonitor(Req#request.monitor, [flush]),
     Ref ! {done, Ref, Result},
     {[], State#state{requests = NewRequests}}.
 
@@ -672,7 +716,7 @@ handle_query_result_refresh_cancelled_test() ->
     % process, so `Ref ! Message` has a real alias to deliver into this mailbox.
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
-    Req = #request{statement_text = ~"select 1", phase = refreshing_types},
+    Req = #request{statement_text = ~"select 1", phase = refreshing_types, monitor = erlang:monitor(process, self())},
     State = test_state(#{Ref => Req}, #{}),
     {Actions, NewState} = handle_query_result(#{}, Ref, {error, #{}}, State),
     ?assertEqual([], Actions),
@@ -687,7 +731,7 @@ survive the refresh's own Query message.
 """.
 handle_query_result_refresh_succeeded_test() ->
     Ref = make_ref(),
-    Req = #request{statement_text = ~"select 1", phase = refreshing_types},
+    Req = #request{statement_text = ~"select 1", phase = refreshing_types, monitor = erlang:monitor(process, self())},
     State = test_state(#{Ref => Req}, #{}),
     {Actions, NewState} = handle_query_result(#{}, Ref, {ok, ~"SELECT 1"}, State),
     ?assertEqual([{prepare, Ref, ~"", ~"select 1"}], Actions),
@@ -702,7 +746,7 @@ the close succeeded and blindly retrying the prepare nobody's waiting on anymore
 handle_unprepare_result_cancelled_test() ->
     Standin = spawn(fun () -> receive stop -> ok end end),
     Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
-    Req = #request{statement_text = ~"select 1", phase = unpreparing},
+    Req = #request{statement_text = ~"select 1", phase = unpreparing, monitor = erlang:monitor(process, self())},
     % The old statement (whatever it was before this collision-driven unprepare was sent) is
     % still live on the wire since the Close never actually ran -- `prepared` must still
     % reflect that, not have already dropped it when the unprepare was merely dispatched.

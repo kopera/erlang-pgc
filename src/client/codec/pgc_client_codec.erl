@@ -24,14 +24,24 @@
 atom}, ...}`) -- an optional `modules` key prepends extra/override codec modules, tried before
 `pgc_client_codec_builtin`, so a same-named function wins; everything else becomes the per-codec
 options bag (see `options/2`).
+
+Every module in the resulting search list is loaded here, eagerly, rather than left to whenever
+`resolve/3` first needs it: `find_codec/2` converts a proc name straight to an atom with
+`binary_to_existing_atom/1`, which only succeeds if that atom already exists -- i.e. if the module
+defining it has already been loaded into the VM. On a freshly booted, lazily-loading node nothing
+guarantees `pgc_client_codec_builtin` (or a caller-supplied override) has been loaded before the
+very first `encode/3`/`decode/3` call, which would otherwise raise a spurious `codec_missing` for
+an ordinary built-in type.
 """.
 -spec new(pgc_client_types:t(), Options) -> t() when
     Options :: #{modules => [module()], atom() => term()}.
 new(Types, Options) ->
     ExtraModules = maps:get(modules, Options, []),
+    Modules = ExtraModules ++ [pgc_client_codec_builtin],
+    lists:foreach(fun code:ensure_loaded/1, Modules),
     #codecs{
         types = Types,
-        modules = ExtraModules ++ [pgc_client_codec_builtin],
+        modules = Modules,
         options = maps:remove(modules, Options)
     }.
 
@@ -108,10 +118,8 @@ find_codec(Key, Modules) ->
 find_module(_Function, []) ->
     error;
 find_module(Function, [Module | Rest]) ->
-    % function_exported/3 only ever answers against already-loaded code -- ensure_loaded/1
-    % first so a module that simply hasn't been called yet (e.g. a caller-supplied override)
-    % isn't mistaken for one that doesn't implement this proc name.
-    _ = code:ensure_loaded(Module),
+    % Every module here was already loaded by new/2 -- function_exported/3 only ever answers
+    % against already-loaded code, but by construction that's never in question at this point.
     case erlang:function_exported(Module, Function, 3) of
         true -> {ok, Module, Function};
         false -> find_module(Function, Rest)
