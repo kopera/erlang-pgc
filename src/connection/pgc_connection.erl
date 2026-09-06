@@ -67,7 +67,7 @@ The connection reached `ReadyForQuery`.
 -callback handle_unprepare_result(ConnectionInfo, Ref, Result, State) -> {[action()], State} when
     ConnectionInfo :: connection_info(),
     Ref :: term(),
-    Result :: {ok, Name :: unicode:chardata()},
+    Result :: {ok, Name :: unicode:chardata()} | {error, pgc_protocol_message:error_response_fields()},
     State :: term().
 
 -callback handle_execute_result(ConnectionInfo, Ref, Result, State) -> {[action()], State} when

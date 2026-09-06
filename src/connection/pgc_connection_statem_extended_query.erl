@@ -270,6 +270,16 @@ handle_event(internal, #close_complete{}, #s_unpreparing{} = State, _ConnectionD
         }}
     ]};
 
+handle_event(internal, #error_response{fields = Fields}, #s_unpreparing{ref = Ref}, _ConnectionData) ->
+    % Close itself never fails -- the only way this happens is a cancel landing before
+    % Postgres got to process it (e.g. `unprepare` racing a caller's cancel), which aborts
+    % the whole pipeline instead of running the Close.
+    {keep_state_and_data, [
+        {next_event, internal, #callback{
+            name = handle_unprepare_result, args = [Ref, {error, Fields}]
+        }}
+    ]};
+
 handle_event(internal, #ready_for_query{status = Status}, #s_unpreparing{} = _State, ConnectionData) ->
     pgc_connection_statem:ready(Status, ConnectionData);
 

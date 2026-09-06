@@ -380,7 +380,16 @@ handle_unprepare_result(_ConnectionInfo, Ref, {ok, Name}, State) ->
     % followed by a prepare, never a terminal result on its own.
     #state{pending = Pending} = State,
     #{Ref := Req} = Pending,
-    {[{prepare, Ref, Name, Req#req.statement_text}], State}.
+    {[{prepare, Ref, Name, Req#req.statement_text}], State};
+
+handle_unprepare_result(_ConnectionInfo, Ref, {error, Fields}, State) ->
+    % Close itself can't fail -- this only happens if a cancel landed before Postgres got to
+    % it. Abandon the request the same way a cancel during a real execute already does,
+    % rather than assuming success and blindly retrying a prepare nobody's waiting on.
+    #state{pending = Pending} = State,
+    #{Ref := Req} = Pending,
+    Req#req.ref ! {done, Req#req.ref, {error, Fields}},
+    {[], State#state{pending = maps:remove(Ref, Pending)}}.
 
 
 -doc false.
@@ -616,4 +625,22 @@ handle_query_result_refresh_succeeded_test() ->
     {Actions, NewState} = handle_query_result(#{}, Ref, {ok, ~"SELECT 1"}, State),
     ?assertEqual([{prepare, Ref, ~"", ~"select 1"}], Actions),
     ?assertEqual(#{Ref => Req#req{refreshing_types = false}}, NewState#state.pending).
+
+-doc """
+A cancel landing while a cache-collision unprepare is in flight (see the cache-collision
+branch of handle_cast/3) aborts the Close before Postgres runs it, so Postgres reports it as
+an error rather than a CloseComplete -- this should abandon the request rather than assuming
+the close succeeded and blindly retrying the prepare nobody's waiting on anymore.
+""".
+handle_unprepare_result_cancelled_test() ->
+    Standin = spawn(fun () -> receive stop -> ok end end),
+    Ref = erlang:monitor(process, Standin, [{alias, demonitor}]),
+    Req = #req{ref = Ref, statement_text = ~"select 1", parameters = [], refreshing_types = false},
+    State = #state{types = pgc_client_types:new(), pending = #{Ref => Req}, prepared = #{}},
+    {Actions, NewState} = handle_unprepare_result(#{}, Ref, {error, #{}}, State),
+    ?assertEqual([], Actions),
+    ?assertEqual(#{}, NewState#state.pending),
+    ?assertEqual({done, Ref, {error, #{}}}, receive Message -> Message after 0 -> timeout end),
+    erlang:demonitor(Ref, [flush]),
+    Standin ! stop.
 -endif.
