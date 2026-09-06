@@ -2,27 +2,28 @@
 -moduledoc false.
 
 -export([
-    encode/3,
-    decode/3
+    encode/2,
+    decode/2
 ]).
 
-encode(Ranges, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Codecs) when is_list(Ranges) ->
-    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, Codecs),
+-spec encode([pgc_client_codec_range:range()], fun((term()) -> iodata() | null)) -> iodata().
+encode(Ranges, EncodeElement) when is_list(Ranges) ->
     [<<(length(Ranges)):32/signed-integer>> |
-        [encode_range(Range, ElementDescriptor, Codecs) || Range <- Ranges]];
-encode(Value, TypeDescriptor, Codecs) ->
-    erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
+        [encode_range(Range, EncodeElement) || Range <- Ranges]];
+encode(Value, EncodeElement) ->
+    erlang:error(badarg, [Value, EncodeElement]).
 
-encode_range(Range, ElementDescriptor, Codecs) ->
-    Encoded = pgc_client_codec_range:encode_range(Range, ElementDescriptor, Codecs),
+encode_range(Range, EncodeElement) ->
+    Encoded = pgc_client_codec_range:encode(Range, EncodeElement),
     [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded].
 
-decode(<<Count:32/signed-integer, Data/binary>>, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, Codecs) ->
-    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, Codecs),
-    decode_ranges(Count, Data, ElementDescriptor, Codecs, []).
 
-decode_ranges(0, <<>>, _ElementDescriptor, _Codecs, Acc) ->
+-spec decode(binary(), fun((binary()) -> term())) -> [pgc_client_codec_range:range()].
+decode(<<Count:32/signed-integer, Data/binary>>, DecodeElement) ->
+    decode_ranges(Count, Data, DecodeElement, []).
+
+decode_ranges(0, <<>>, _DecodeElement, Acc) ->
     lists:reverse(Acc);
-decode_ranges(Count, <<Size:32/signed-integer, RangeData:Size/binary, Rest/binary>>, ElementDescriptor, Codecs, Acc) ->
-    {Range, <<>>} = pgc_client_codec_range:decode_range(RangeData, ElementDescriptor, Codecs),
-    decode_ranges(Count - 1, Rest, ElementDescriptor, Codecs, [Range | Acc]).
+decode_ranges(Count, <<Size:32/signed-integer, RangeData:Size/binary, Rest/binary>>, DecodeElement, Acc) ->
+    {Range, <<>>} = pgc_client_codec_range:decode(RangeData, DecodeElement),
+    decode_ranges(Count - 1, Rest, DecodeElement, [Range | Acc]).

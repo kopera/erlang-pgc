@@ -3,19 +3,19 @@
 
 -export([
     encode/3,
-    decode/3
+    decode/2
 ]).
 
-encode(List, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Codecs) when is_list(List) ->
-    {Flags, EncodedElements} = encode_elements(ElementOid, Codecs, List),
-    [encode_header(ElementOid, Flags, List) | EncodedElements];
-encode(Value, TypeDescriptor, Codecs) ->
-    erlang:error(badarg, [Value, TypeDescriptor, Codecs]).
+-spec encode(list(), pgc_protocol:oid(), fun((term()) -> iodata() | null)) -> iodata().
+encode(List, ElementOid, EncodeElement) when is_list(List) ->
+    {Flags, EncodedElements} = encode_elements(EncodeElement, lists:flatten(List), 0, []),
+    [encode_header(ElementOid, Flags, List) | EncodedElements].
 
 
-decode(Data, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, Codecs) ->
-    {Lengths, _Flags, ElementOid, Rest} = decode_header(Data),
-    Elements = decode_elements(ElementOid, Codecs, Rest),
+-spec decode(binary(), fun((binary()) -> term())) -> list().
+decode(Data, DecodeElement) ->
+    {Lengths, Rest} = decode_header(Data),
+    Elements = decode_elements(DecodeElement, Rest, []),
     unflatten(Lengths, Elements).
 
 
@@ -42,21 +42,13 @@ lengths([H | _] = Value, Acc) when is_list(H) ->
 lengths(Value, Acc) ->
     lists:reverse([length(Value) | Acc]).
 
-encode_elements(ElementOid, Codecs, Values) ->
-    {ok, ElementDescriptor} = pgc_client_codec:lookup(ElementOid, Codecs),
-    encode_elements(ElementDescriptor, Codecs, 0, lists:flatten(Values), []).
-
-encode_elements(_ElementDescriptor, _Codecs, Flags, [], Acc) ->
+encode_elements(_EncodeElement, [], Flags, Acc) ->
     {Flags, lists:reverse(Acc)};
-encode_elements(ElementDescriptor, Codecs, Flags, [Value | Rest], Acc) ->
-    {Flags1, Element} = encode_element(ElementDescriptor, Codecs, Flags, Value),
-    encode_elements(ElementDescriptor, Codecs, Flags1, Rest, [Element | Acc]).
-
-encode_element(_ElementDescriptor, _Codecs, Flags, null) ->
-    {Flags bor 1, <<-1:32/signed-integer>>};
-encode_element(ElementDescriptor, Codecs, Flags, Value) ->
-    Encoded = pgc_client_codec:encode(Value, ElementDescriptor, Codecs),
-    {Flags, [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded]}.
+encode_elements(EncodeElement, [null | Rest], Flags, Acc) ->
+    encode_elements(EncodeElement, Rest, Flags bor 1, [<<-1:32/signed-integer>> | Acc]);
+encode_elements(EncodeElement, [Value | Rest], Flags, Acc) ->
+    Encoded = EncodeElement(Value),
+    encode_elements(EncodeElement, Rest, Flags, [[<<(iolist_size(Encoded)):32/signed-integer>>, Encoded] | Acc]).
 
 
 % ------------------------------------------------------------------------------
@@ -78,29 +70,18 @@ split(Length, Elements, Acc) ->
     {Chunk, Rest} = lists:split(Length, Elements),
     split(Length, Rest, [Chunk | Acc]).
 
-decode_header(<<Dims:32/signed-integer, Flags:32/signed-integer, ElementOid:32/signed-integer, Rest/binary>>) ->
-    {Lengths, Rest1} = decode_lengths(Dims, [], Rest),
-    {Lengths, Flags, ElementOid, Rest1}.
+decode_header(<<Dims:32/signed-integer, _Flags:32/signed-integer, _ElementOid:32/signed-integer, Rest/binary>>) ->
+    decode_lengths(Dims, [], Rest).
 
 decode_lengths(0, Lengths, Payload) ->
     {Lengths, Payload};
 decode_lengths(Dims, Lengths, <<Length:32/signed-integer, LowerBound:32/signed-integer, Rest/binary>>) ->
-    % Only arrays with a lower bound of 1 are supported.
-    % http://postgresql.nabble.com/Disallow-arrays-with-non-standard-lower-bounds-td5786191.html
     1 = LowerBound,
     decode_lengths(Dims - 1, [Length | Lengths], Rest).
 
-decode_elements(ElementOid, Codecs, Payload) ->
-    {ok, ElementDescriptor} = pgc_client_codec:lookup(ElementOid, Codecs),
-    decode_elements(ElementDescriptor, Codecs, Payload, []).
-
-decode_elements(_ElementDescriptor, _Codecs, <<>>, Acc) ->
+decode_elements(_DecodeElement, <<>>, Acc) ->
     lists:reverse(Acc);
-decode_elements(ElementDescriptor, Codecs, Data, Acc) ->
-    {Element, Rest} = decode_element(ElementDescriptor, Codecs, Data),
-    decode_elements(ElementDescriptor, Codecs, Rest, [Element | Acc]).
-
-decode_element(_ElementDescriptor, _Codecs, <<-1:32/signed-integer, Rest/binary>>) ->
-    {null, Rest};
-decode_element(ElementDescriptor, Codecs, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>) ->
-    {pgc_client_codec:decode(Data, ElementDescriptor, Codecs), Rest}.
+decode_elements(DecodeElement, <<-1:32/signed-integer, Rest/binary>>, Acc) ->
+    decode_elements(DecodeElement, Rest, [null | Acc]);
+decode_elements(DecodeElement, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>, Acc) ->
+    decode_elements(DecodeElement, Rest, [DecodeElement(Data) | Acc]).

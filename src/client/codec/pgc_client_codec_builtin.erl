@@ -451,18 +451,40 @@ jsonb_recv(<<1, Data/binary>>, TypeDescriptor, Codecs) ->
 % array / record / range / multirange -- complex binary layouts, kept in their own modules
 % ------------------------------------------------------------------------------
 
-array_send(V, T, C) -> pgc_client_codec_array:encode(V, T, C).
-array_recv(V, T, C) -> pgc_client_codec_array:decode(V, T, C).
-int2vectorsend(V, T, C) -> pgc_client_codec_array:encode(V, T, C).
-int2vectorrecv(V, T, C) -> pgc_client_codec_array:decode(V, T, C).
-oidvectorsend(V, T, C) -> pgc_client_codec_array:encode(V, T, C).
-oidvectorrecv(V, T, C) -> pgc_client_codec_array:decode(V, T, C).
+array_send(V, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, C) ->
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(ElementOid, C),
+    pgc_client_codec_array:encode(V, ElementOid, fun(Value) -> pgc_client_codec:encode(Value, ElementDescriptor, C) end).
+array_recv(V, {_Oid, _Name, _Kind, _Recv, _Send, ElementOid, _Parent, _Fields}, C) ->
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(ElementOid, C),
+    pgc_client_codec_array:decode(V, fun(Data) -> pgc_client_codec:decode(Data, ElementDescriptor, C) end).
+int2vectorsend(V, T, C) -> array_send(V, T, C).
+int2vectorrecv(V, T, C) -> array_recv(V, T, C).
+oidvectorsend(V, T, C) -> array_send(V, T, C).
+oidvectorrecv(V, T, C) -> array_recv(V, T, C).
 
-record_send(V, T, C) -> pgc_client_codec_record:encode(V, T, C).
-record_recv(V, T, C) -> pgc_client_codec_record:decode(V, T, C).
+record_send(V, {_Oid, _Name, _Kind, _Recv, _Send, _Element, _Parent, FieldsDescription}, C) ->
+    pgc_client_codec_record:encode(V, FieldsDescription, fun(Oid, Value) ->
+        {ok, Descriptor} = pgc_client_codec:lookup(Oid, C),
+        pgc_client_codec:encode(Value, Descriptor, C)
+    end).
+record_recv(V, {_Oid, _Name, _Kind, _Recv, _Send, _Element, _Parent, FieldsDescription}, C) ->
+    map = maps:get(decode, pgc_client_codec:options(record, C), map),
+    pgc_client_codec_record:decode(V, FieldsDescription, fun(Oid, Data) ->
+        {ok, Descriptor} = pgc_client_codec:lookup(Oid, C),
+        pgc_client_codec:decode(Data, Descriptor, C)
+    end).
 
-range_send(V, T, C) -> pgc_client_codec_range:encode(V, T, C).
-range_recv(V, T, C) -> pgc_client_codec_range:decode(V, T, C).
+range_send(V, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, C) ->
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, C),
+    pgc_client_codec_range:encode(V, fun(Value) -> pgc_client_codec:encode(Value, ElementDescriptor, C) end).
+range_recv(V, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, C) ->
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, C),
+    {Range, <<>>} = pgc_client_codec_range:decode(V, fun(Data) -> pgc_client_codec:decode(Data, ElementDescriptor, C) end),
+    Range.
 
-multirange_send(V, T, C) -> pgc_client_codec_multirange:encode(V, T, C).
-multirange_recv(V, T, C) -> pgc_client_codec_multirange:decode(V, T, C).
+multirange_send(V, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, C) ->
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, C),
+    pgc_client_codec_multirange:encode(V, fun(Value) -> pgc_client_codec:encode(Value, ElementDescriptor, C) end).
+multirange_recv(V, {_Oid, _Name, _Kind, _Recv, _Send, _Element, Parent, _Fields}, C) ->
+    {ok, ElementDescriptor} = pgc_client_codec:lookup(Parent, C),
+    pgc_client_codec_multirange:decode(V, fun(Data) -> pgc_client_codec:decode(Data, ElementDescriptor, C) end).
