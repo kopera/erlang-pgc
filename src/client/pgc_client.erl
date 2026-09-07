@@ -21,7 +21,9 @@ sending queries to the PostgreSQL server.
     statement_text/0,
     statement_parameters/0,
     execute_options/0,
-    transaction_options/0
+    transaction_options/0,
+    result_metadata/0,
+    request_error/0
 ]).
 
 -behaviour(pgc_connection).
@@ -158,7 +160,7 @@ exits with `exit({timeout, _})`.
     Error :: request_error().
 -type execute_options() :: #{
     row => map | list | tuple | proplist,
-    timeout => timeout(),
+    timeout => timeout() | {abs, integer()},
     cache => false | {true, Key :: string() | unicode:unicode_binary() | atom()},
     codec => #{modules => [module()], atom() => term()}
 }.
@@ -208,7 +210,7 @@ it arrives. A halted fold cancels the query on the server; see `execute/4` for `
     Error :: request_error().
 -type execute_fold_fun(Acc) :: fun((pgc_connection:row_description(), [term() | null], Acc) -> {continue, Acc} | {halt, Acc}).
 -type execute_fold_options() :: #{
-    timeout => timeout(),
+    timeout => timeout() | {abs, integer()},
     cache => execute_cache_options(),
     codec => #{modules => [module()], atom() => term()}
 }.
@@ -256,7 +258,7 @@ mediates the wire and owns the (write side of the) type cache; the caller builds
     ExecuteRequestOptions :: #{cache => execute_cache_options()},
     Options :: #{
         codec => #{modules => [module()], atom() => term()},
-        timeout => timeout()
+        timeout => timeout() | {abs, integer()}
     },
     Fun :: fun((pgc_connection:row_description(), [term() | null], Acc) -> {continue, Acc} | {halt, Acc}),
     Error :: request_error().

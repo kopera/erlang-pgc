@@ -2,6 +2,8 @@
 -export([
     start_link/2,
     start_link/3,
+    child_spec/3,
+    child_spec/4,
     stop/1
 ]).
 -export([
@@ -11,7 +13,9 @@
 ]).
 -export_type([
     options/0,
-    info/0
+    info/0,
+    pool_ref/0,
+    pool_name/0
 ]).
 
 -behaviour(supervisor).
@@ -40,8 +44,28 @@ start_link(Name, ConnectionOptions, PoolOptions) ->
     }).
 
 
--spec stop(pid() | atom()) -> ok.
-stop(PoolRef) when is_atom(PoolRef); is_pid(PoolRef) ->
+-spec child_spec(Id, pgc_connection:start_options(), options()) -> supervisor:child_spec() when
+    Id :: term().
+child_spec(Id, ConnectionOptions, PoolOptions) ->
+    #{
+        id => Id,
+        start => {?MODULE, start_link, [ConnectionOptions, PoolOptions]},
+        type => supervisor
+    }.
+
+
+-spec child_spec(Id, pool_name(), pgc_connection:start_options(), options()) -> supervisor:child_spec() when
+    Id :: term().
+child_spec(Id, Name, ConnectionOptions, PoolOptions) ->
+    #{
+        id => Id,
+        start => {?MODULE, start_link, [Name, ConnectionOptions, PoolOptions]},
+        type => supervisor
+    }.
+
+
+-spec stop(pool_ref()) -> ok.
+stop(PoolRef) ->
     supervisor:stop(PoolRef).
 
 
