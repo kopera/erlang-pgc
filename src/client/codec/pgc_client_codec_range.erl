@@ -2,13 +2,16 @@
 -moduledoc false.
 
 -export([
-    encode/2,
-    decode/2
+    encode/3,
+    decode/3
 ]).
 -export_type([
     range/0,
     bound/0
 ]).
+
+-import_record(pgc_client_codec, [codec]).
+-import_record(pgc_client_types, [descriptor]).
 
 -type bound() :: unbound | {inclusive, term()} | {exclusive, term()}.
 -type range() :: empty | #{lower := bound(), upper := bound()}.
@@ -19,15 +22,20 @@
 -define(lb_infinite, 16#08).
 -define(ub_infinite, 16#10).
 
--spec encode(range(), fun((term()) -> iodata() | null)) -> iodata().
-encode(empty, _EncodeElement) ->
+
+-spec encode(Value, Descriptor, Codec) -> iodata() when
+    Value :: range(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{}.
+encode(empty, _Descriptor, _Codec) ->
     <<?empty:8>>;
-encode(#{lower := Lower, upper := Upper}, EncodeElement) ->
+encode(#{lower := Lower, upper := Upper}, #descriptor{parent = ElementTypeId}, Codec) ->
+    EncodeElement = fun(Value) -> pgc_client_codec:encode(ElementTypeId, Value, Codec) end,
     {LowerFlags, LowerData} = encode_bound(Lower, ?lb_inclusive, ?lb_infinite, EncodeElement),
     {UpperFlags, UpperData} = encode_bound(Upper, ?ub_inclusive, ?ub_infinite, EncodeElement),
     [<<(LowerFlags bor UpperFlags):8>>, LowerData, UpperData];
-encode(Value, EncodeElement) ->
-    erlang:error(badarg, [Value, EncodeElement]).
+encode(Value, Descriptor, Codec) ->
+    erlang:error(badarg, [Value, Descriptor, Codec]).
 
 encode_bound(unbound, _InclusiveFlag, InfiniteFlag, _EncodeElement) ->
     {InfiniteFlag, <<>>};
@@ -41,13 +49,17 @@ encode_bound_value(Value, EncodeElement) ->
     [<<(iolist_size(Encoded)):32/signed-integer>>, Encoded].
 
 
--spec decode(binary(), fun((binary()) -> term())) -> {range(), binary()}.
-decode(<<Flags:8, Rest/binary>>, _DecodeElement) when Flags band ?empty =/= 0 ->
-    {empty, Rest};
-decode(<<Flags:8, Rest/binary>>, DecodeElement) ->
+-spec decode(Data, Descriptor, Codec) -> range() when
+    Data :: binary(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{}.
+decode(<<Flags:8>>, _Descriptor, _Codec) when Flags band ?empty =/= 0 ->
+    empty;
+decode(<<Flags:8, Rest/binary>>, #descriptor{parent = ElementTypeId}, Codec) ->
+    DecodeElement = fun(Data) -> pgc_client_codec:decode(ElementTypeId, Data, Codec) end,
     {Lower, Rest1} = decode_bound(Flags, ?lb_infinite, ?lb_inclusive, Rest, DecodeElement),
-    {Upper, Rest2} = decode_bound(Flags, ?ub_infinite, ?ub_inclusive, Rest1, DecodeElement),
-    {#{lower => Lower, upper => Upper}, Rest2}.
+    {Upper, <<>>} = decode_bound(Flags, ?ub_infinite, ?ub_inclusive, Rest1, DecodeElement),
+    #{lower => Lower, upper => Upper}.
 
 decode_bound(Flags, InfiniteFlag, _InclusiveFlag, Data, _DecodeElement) when Flags band InfiniteFlag =/= 0 ->
     {unbound, Data};

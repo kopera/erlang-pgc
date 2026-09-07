@@ -6,17 +6,27 @@
     decode/3
 ]).
 
--spec encode(map(), FieldsDescription, fun((pgc_protocol:oid(), term()) -> iodata() | null)) -> iodata() when
-    FieldsDescription :: [{unicode:unicode_binary(), pgc_protocol:oid()}] | undefined.
-encode(Term, FieldsDescription, EncodeField) ->
-    Fields = from_term(FieldsDescription, Term),
+-import_record(pgc_client_codec, [codec]).
+-import_record(pgc_client_types, [descriptor]).
+
+
+-spec encode(Values, Descriptor, Codec) -> iodata() when
+    Values :: list(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{}.
+encode(Record, #descriptor{fields = FieldsDescription}, Codec) when FieldsDescription =/= undefined ->
+    Fields = [{TypeId, maps:get(Name, Record, null)} || {Name, TypeId} <- FieldsDescription],
     FieldsCount = length(Fields),
+    EncodeField = fun(TypeId, Value) -> pgc_client_codec:encode(TypeId, Value, Codec) end,
     [<<FieldsCount:32/integer>> | encode_fields(EncodeField, Fields)].
 
 
--spec decode(binary(), FieldsDescription, fun((pgc_protocol:oid(), binary()) -> term())) -> term() when
-    FieldsDescription :: [{unicode:unicode_binary(), pgc_protocol:oid()}] | undefined.
-decode(<<_Count:32/integer, Payload/binary>>, FieldsDescription, DecodeField) ->
+-spec decode(Data, Descriptor, Codec) -> map() when
+    Data :: binary(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{}.
+decode(<<_Count:32/integer, Payload/binary>>, #descriptor{fields = FieldsDescription}, Codec) ->
+    DecodeField = fun(TypeId, Data) -> pgc_client_codec:decode(TypeId, Data, Codec) end,
     Fields = decode_fields(DecodeField, Payload),
     to_term(FieldsDescription, Fields).
 
@@ -25,24 +35,28 @@ decode(<<_Count:32/integer, Payload/binary>>, FieldsDescription, DecodeField) ->
 % Encoding
 % ------------------------------------------------------------------------------
 
-from_term(FieldsDescription, Map) when FieldsDescription =/= undefined, is_map(Map) ->
-    [{Oid, maps:get(FieldName, Map, null)} || {FieldName, Oid} <- FieldsDescription];
-from_term(FieldsDescription, Value) ->
-    erlang:error(badarg, [FieldsDescription, Value]).
-
 encode_fields(EncodeField, Fields) ->
-    [encode_field(EncodeField, Oid, FieldValue) || {Oid, FieldValue} <- Fields].
+    [encode_field(EncodeField, TypeId, Value) || {TypeId, Value} <- Fields].
 
-encode_field(_EncodeField, Oid, null) ->
-    <<Oid:32/integer, -1:32/signed-integer>>;
-encode_field(EncodeField, Oid, Value) ->
-    Encoded = EncodeField(Oid, Value),
-    [<<Oid:32/integer, (iolist_size(Encoded)):32/signed-integer>>, Encoded].
+encode_field(_EncodeField, TypeId, null) ->
+    <<TypeId:32/integer, -1:32/signed-integer>>;
+encode_field(EncodeField, TypeId, Value) ->
+    Encoded = EncodeField(TypeId, Value),
+    [<<TypeId:32/integer, (iolist_size(Encoded)):32/signed-integer>>, Encoded].
 
 
 % ------------------------------------------------------------------------------
 % Decoding
 % ------------------------------------------------------------------------------
+
+decode_fields(_DecodeField, <<>>) ->
+    [];
+decode_fields(DecodeField, <<TypeId:32/integer, -1:32/signed-integer, Rest/binary>>) ->
+    [{TypeId, null} | decode_fields(DecodeField, Rest)];
+decode_fields(DecodeField, <<TypeId:32/integer, Size:32/signed-integer, FieldData:Size/binary, Rest/binary>>) ->
+    Value = DecodeField(TypeId, FieldData),
+    [{TypeId, Value} | decode_fields(DecodeField, Rest)].
+
 
 to_term(undefined, Fields) ->
     % Anonymous record -- no field names to key by, so number them instead.
@@ -51,18 +65,7 @@ to_term(undefined, Fields) ->
         Acc#{Key => Value}
     end, #{}, Fields);
 to_term(FieldsDescription, Fields) ->
-    TupleList = lists:zipwith(fun ({FieldName, Oid}, {Oid, FieldValue}) ->
-        {FieldName, FieldValue}
-    end, FieldsDescription, Fields),
-    maps:from_list(TupleList).
+    #{
+        Name => Value || {Name, TypeId} <:- FieldsDescription && {TypeId, Value} <:- Fields
+    }.
 
-decode_fields(DecodeField, Data) ->
-    decode_fields(DecodeField, Data, []).
-
-decode_fields(_DecodeField, <<>>, Acc) ->
-    lists:reverse(Acc);
-decode_fields(DecodeField, <<Oid:32/integer, -1:32/signed-integer, Rest/binary>>, Acc) ->
-    decode_fields(DecodeField, Rest, [{Oid, null} | Acc]);
-decode_fields(DecodeField, <<Oid:32/integer, Size:32/signed-integer, FieldData:Size/binary, Rest/binary>>, Acc) ->
-    Value = DecodeField(Oid, FieldData),
-    decode_fields(DecodeField, Rest, [{Oid, Value} | Acc]).

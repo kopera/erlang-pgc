@@ -32,6 +32,7 @@
     execute_json_round_trip_test/1,
     execute_codecs_module_override_test/1,
     execute_missing_codec_crashes_connection_test/1,
+    reset_test/1,
     transaction_commit_test/1,
     transaction_rollback_test/1,
     transaction_exception_rolls_back_test/1
@@ -100,6 +101,7 @@ groups() ->
             execute_json_round_trip_test,
             execute_codecs_module_override_test,
             execute_missing_codec_crashes_connection_test,
+            reset_test,
             transaction_commit_test,
             transaction_rollback_test,
             transaction_exception_rolls_back_test
@@ -193,7 +195,7 @@ execute_streams_rows_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
     Fun = fun (_RowDescription, [N], Acc) -> {continue, [N | Acc]} end,
-    {ok, Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 5) as n", [], Fun, [], #{}),
+    {ok, Metadata, Values} = pgc_client:execute_fold(Connection, "select generate_series(1, 5) as n", [], Fun, [], #{}),
     ?assertMatch(#{command := ~"select", rows := 5}, Metadata),
     ?assertEqual([5, 4, 3, 2, 1], Values),
 
@@ -208,7 +210,7 @@ execute_halt_cancels_query_test(Config) ->
             _ -> {continue, [N | Acc]}
         end
     end,
-    {ok, _Metadata, Values} = pgc_client:execute(Connection, "select generate_series(1, 1000000) as n", [], Fun, [], #{}),
+    {ok, _Metadata, Values} = pgc_client:execute_fold(Connection, "select generate_series(1, 1000000) as n", [], Fun, [], #{}),
     ?assertEqual([3, 2, 1], Values),
 
     % Cancellation should free the connection quickly rather than draining a million rows.
@@ -301,7 +303,7 @@ execute_enum_decode_option_test(Config) ->
 
     {ok, _, []} = pgc_client:execute(Connection, "create type mood as enum ('sad', 'ok', 'happy')", []),
     {ok, _, [#{<<"m">> := <<"happy">>}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", []),
-    {ok, _, [#{<<"m">> := happy}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", [], #{codecs => #{enum => #{decode => atom}}}),
+    {ok, _, [#{<<"m">> := happy}]} = pgc_client:execute(Connection, "select 'happy'::mood as m", [], #{codec => #{enum => #{decode => atom}}}),
 
     ok = pgc_client:stop(Connection).
 
@@ -342,7 +344,7 @@ execute_codecs_module_override_test(Config) ->
 
     {ok, _, [#{<<"n">> := 42}]} = pgc_client:execute(Connection, "select 42::int4 as n", []),
     {ok, _, [#{<<"n">> := sentinel}]} =
-        pgc_client:execute(Connection, "select 42::int4 as n", [], #{codecs => #{modules => [pgc_sentinel_codec]}}),
+        pgc_client:execute(Connection, "select 42::int4 as n", [], #{codec => #{modules => [pgc_sentinel_codec]}}),
 
     ok = pgc_client:stop(Connection).
 
@@ -353,10 +355,38 @@ execute_missing_codec_crashes_connection_test(Config) ->
     % silently returning something wrong. Decoding happens in the caller's own process (see
     % collect/7), so this crashes the caller, not the shared connection -- which stays usable
     % for every other (unrelated) caller.
-    ?assertError({codec_missing, _}, pgc_client:execute(Connection, "select point(1,2) as t", [])),
+    ?assertError({missing_decoder, _}, pgc_client:execute(Connection, "select point(1,2) as t", [])),
     ?assert(is_process_alive(Connection)),
 
     {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
+
+    ok = pgc_client:stop(Connection).
+
+reset_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, []} = pgc_client:execute(Connection, "set statement_timeout = '1s'", []),
+    {ok, _, []} = pgc_client:execute(Connection, "start transaction", []),
+    {ok, _, []} = pgc_client:execute(Connection, "create table pgc_client_test (id int4)", []),
+    {ok, _, []} = pgc_client:execute(Connection, "insert into pgc_client_test (id) values (1)", []),
+
+    ok = pgc_client:reset(Connection),
+
+    {ok, _, [#{<<"timeout">> := Timeout}]} = pgc_client:execute(Connection,
+        "select current_setting('statement_timeout') as timeout", []),
+    ?assertEqual(<<"0">>, Timeout),
+
+    % The table was created inside the same transaction as the insert above, and never
+    % committed -- if reset/1 hadn't rolled it back, this would still see it.
+    ?assertMatch({error, _}, pgc_client:execute(Connection, "select count(*) from pgc_client_test", [])),
+
+    % No transaction open this time -- reset/1 skips the rollback round trip entirely, but
+    % must still clear the session-level `set`.
+    {ok, _, []} = pgc_client:execute(Connection, "set statement_timeout = '1s'", []),
+    ok = pgc_client:reset(Connection),
+    {ok, _, [#{<<"timeout">> := IdleTimeout}]} = pgc_client:execute(Connection,
+        "select current_setting('statement_timeout') as timeout", []),
+    ?assertEqual(<<"0">>, IdleTimeout),
 
     ok = pgc_client:stop(Connection).
 
@@ -367,7 +397,7 @@ transaction_commit_test(Config) ->
 
     Result = pgc_client:transaction(Connection, fun () ->
         {ok, _, []} = pgc_client:execute(Connection, "insert into pgc_client_test (id) values (1)", []),
-        committed
+        {commit, committed}
     end, #{}),
     ?assertEqual(committed, Result),
 
@@ -382,7 +412,7 @@ transaction_rollback_test(Config) ->
 
     Result = pgc_client:transaction(Connection, fun () ->
         {ok, _, []} = pgc_client:execute(Connection, "insert into pgc_client_test (id) values (1)", []),
-        pgc_client:rollback(Connection, rolled_back)
+        {rollback, rolled_back}
     end, #{}),
     ?assertEqual(rolled_back, Result),
 

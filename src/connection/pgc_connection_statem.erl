@@ -68,6 +68,7 @@
     backend_parameters :: #{binary() => binary()},
 
     current_ref :: term() | undefined,
+    status :: idle | transaction | error,
 
     handler_module :: module(),
     handler_state :: term()
@@ -146,7 +147,7 @@
     Status :: idle | transaction | error,
     ConnectionData :: #data{}.
 ready(Status, ConnectionData) ->
-    {next_state, #s_ready{status = Status}, ConnectionData#data{current_ref = undefined}, [
+    {next_state, #s_ready{status = Status}, ConnectionData#data{current_ref = undefined, status = Status}, [
         {change_callback_module, ?MODULE},
         {next_event, internal, #callback{name = handle_ready, args = []}}
     ]}.
@@ -197,6 +198,7 @@ init(#args{
         backend_parameters = #{},
 
         current_ref = undefined,
+        status = idle,
 
         handler_module = HandlerModule,
         handler_state = HandlerState
@@ -264,7 +266,7 @@ handle_event(enter, _OldState, #s_ready{}, ConnectionData) ->
     ]};
 
 handle_event(state_timeout, ping, #s_ready{status = Status}, ConnectionData) ->
-    {next_state, #s_pinging{status = Status}, ConnectionData, [
+    {next_state, #s_pinging{status = Status}, ConnectionData#data{status = Status}, [
         {next_event, internal, #send{messages = [
             #pgc_protocol_message:sync{}
         ]}}
@@ -283,7 +285,7 @@ handle_event(internal, #execute{ref = Ref, name = Name, parameters = Parameters,
     pgc_connection_statem_extended_query:execute(Ref, Name, Parameters, Options, ConnectionData#data{current_ref = Ref});
 
 handle_event(internal, #pgc_protocol_message:ready_for_query{status = Status}, #s_ready{}, ConnectionData) ->
-    {next_state, #s_ready{status = Status}, ConnectionData};
+    {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}};
 
 % -------------------------------------------------------------------------------
 % State: pinging
@@ -295,14 +297,14 @@ handle_event(enter, _OldState, #s_pinging{}, ConnectionData) ->
     ]};
 
 handle_event(internal, #pgc_protocol_message:ready_for_query{status = Status}, #s_pinging{}, ConnectionData) ->
-    {next_state, #s_ready{status = Status}, ConnectionData};
+    {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}};
 
 handle_event(internal, #pgc_protocol_message:_{} = Message, #s_pinging{status = Status}, ConnectionData) ->
     % Not the ReadyForQuery we sent Sync for, but *some* message from the
     % server, that alone proves the connection is alive. Go back to ready
     % using the status from before the ping and re-queue the message so
     % it gets the same generic handling.
-    {next_state, #s_ready{status = Status}, ConnectionData, [
+    {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}, [
         {next_event, internal, Message}
     ]};
 

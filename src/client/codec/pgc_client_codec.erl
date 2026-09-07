@@ -3,124 +3,137 @@
 
 -export([
     new/2,
-    lookup/2,
-    options/2,
     encode/3,
     decode/3
+]).
+-export([
+    option/4
+]).
+-export_record([
+    codec
 ]).
 -export_type([
     t/0
 ]).
 
--record #codecs{
+-import_record(pgc_client_types, [descriptor]).
+
+-record #codec{
     types :: pgc_client_types:t(),
     modules :: [module()],
     options :: #{atom() => term()}
 }.
--opaque t() :: #codecs{}.
-
--doc """
-`Options` is the same map an `execute` call's `codecs` option carries (`#{enum => #{decode =>
-atom}, ...}`) -- an optional `modules` key prepends extra/override codec modules, tried before
-`pgc_client_codec_builtin`, so a same-named function wins; everything else becomes the per-codec
-options bag (see `options/2`).
-
-Every module in the resulting search list is loaded here, eagerly, rather than left to whenever
-`resolve/3` first needs it: `find_codec/2` converts a proc name straight to an atom with
-`binary_to_existing_atom/1`, which only succeeds if that atom already exists -- i.e. if the module
-defining it has already been loaded into the VM. On a freshly booted, lazily-loading node nothing
-guarantees `pgc_client_codec_builtin` (or a caller-supplied override) has been loaded before the
-very first `encode/3`/`decode/3` call, which would otherwise raise a spurious `codec_missing` for
-an ordinary built-in type.
-""".
--spec new(pgc_client_types:t(), Options) -> t() when
-    Options :: #{modules => [module()], atom() => term()}.
-new(Types, Options) ->
-    ExtraModules = maps:get(modules, Options, []),
-    Modules = ExtraModules ++ [pgc_client_codec_builtin],
-    lists:foreach(fun code:ensure_loaded/1, Modules),
-    #codecs{
-        types = Types,
-        modules = Modules,
-        options = maps:remove(modules, Options)
-    }.
-
-
--spec lookup(pgc_protocol:oid(), t()) -> {ok, pgc_client_types:descriptor()} | error.
-lookup(Oid, #codecs{types = Types}) ->
-    pgc_client_types:lookup(Oid, Types).
-
-
--spec options(Name, t()) -> dynamic() when
-    Name :: atom().
-options(Name, #codecs{options = Options}) ->
-    maps:get(Name, Options, #{}).
+-type t() :: #codec{}.
 
 
 % ------------------------------------------------------------------------------
 % API
 % ------------------------------------------------------------------------------
 
--spec encode(Value, TypeDescriptor, Codecs) -> iodata() | null when
+-spec new(pgc_client_types:t(), Options) -> t() when
+    Options :: #{modules => [module()], atom() => term()}.
+new(Types, Options) ->
+    ExtraModules = maps:get(modules, Options, []),
+    Modules = ExtraModules ++ [pgc_client_codec_builtin],
+    lists:foreach(fun code:ensure_loaded/1, Modules),
+    #codec{
+        types = Types,
+        modules = Modules,
+        options = maps:remove(modules, Options)
+    }.
+
+
+-spec encode(TypeId, Value, Codec) -> iodata() | null when
+    TypeId :: pgc_client_types:id(),
     Value :: term() | null,
-    TypeDescriptor :: pgc_client_types:descriptor(),
-    Codecs :: t().
-encode(null, _TypeDescriptor, _Codecs) ->
+    Codec :: t().
+encode(_TypeId, null, _Codec) ->
     null;
-encode(Value, TypeDescriptor, Codecs) ->
-    {Descriptor, Module, Function} = resolve(TypeDescriptor, Codecs, encode),
-    Module:Function(Value, Descriptor, Codecs).
+encode(TypeId, Value, #codec{} = Codec) ->
+    {ok, Descriptor} = pgc_client_types:lookup(TypeId, Codec#codec.types),
+    case find_encoder(Descriptor, Codec) of
+        {ok, Encoder} -> Encoder(Value);
+        error -> erlang:error({missing_encoder, Descriptor})
+    end.
 
 
--spec decode(Data, TypeDescriptor, Codecs) -> term() when
+-spec decode(TypeId, Data, Codec) -> dynamic() when
+    TypeId :: pgc_client_types:id(),
     Data :: binary() | null,
-    TypeDescriptor :: pgc_client_types:descriptor(),
-    Codecs :: t().
-decode(null, _TypeDescriptor, _Codecs) ->
+    Codec :: t().
+decode(_TypeId, null, _Codec) ->
     null;
-decode(Data, TypeDescriptor, Codecs) ->
-    {Descriptor, Module, Function} = resolve(TypeDescriptor, Codecs, decode),
-    Module:Function(Data, Descriptor, Codecs).
+decode(TypeId, Data, Codec) ->
+    {ok, Descriptor} = pgc_client_types:lookup(TypeId, Codec#codec.types),
+    case find_decoder(Descriptor, Codec) of
+        {ok, Decoder} -> Decoder(Data);
+        error -> erlang:error({missing_decoder, Descriptor})
+    end.
 
+
+-spec option(Namespace, Key, Default, #codec{}) -> dynamic() when
+    Namespace :: atom(),
+    Key :: atom(),
+    Default :: dynamic().
+option(Namespace, Key, Default, #codec{options = Options}) ->
+    case Options of
+        #{Namespace := #{Key := Value}} -> Value;
+        #{} -> Default
+    end.
 
 % ------------------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------------------
 
--doc """
-A domain's wire representation is byte-identical to its base type's -- this is exactly what
-Postgres's own generic `domain_recv`/`domain_send` do internally (validate, then defer to the
-base type's own function) -- so dispatch resolves straight through to the base type rather than
-needing a domain-specific codec.
-""".
-resolve({_Oid, _Name, domain, _Recv, _Send, _Element, Parent, _Fields}, Codecs, Direction) when Parent =/= undefined ->
-    {ok, ParentDescriptor} = lookup(Parent, Codecs),
-    resolve(ParentDescriptor, Codecs, Direction);
-resolve({_Oid, _Name, _Kind, Recv, Send, _Element, _Parent, _Fields} = Descriptor, #codecs{modules = Modules}, Direction) ->
-    Key = case Direction of encode -> Send; decode -> Recv end,
-    case find_codec(Key, Modules) of
-        {ok, Module, Function} -> {Descriptor, Module, Function};
-        error -> erlang:error({codec_missing, Descriptor})
-    end.
+-spec find_encoder(pgc_client_types:descriptor(), #codec{}) -> {ok, fun((term()) -> iodata())} | error.
+find_encoder(#descriptor{kind = domain, parent = ParentTypeId}, Codec) when ParentTypeId =/= undefined ->
+    {ok, ParentDescriptor} = pgc_client_types:lookup(ParentTypeId, Codec#codec.types),
+    find_encoder(ParentDescriptor, Codec);
+find_encoder(#descriptor{send = Send} = Descriptor, Codec) ->
+    resolve(Send, Descriptor, Codec).
 
--doc """
-A proc name doubles as the exported function name that implements it (e.g. `int4send` /
-`m:pgc_client_codec_builtin.int4send/3`) -- dispatch is just finding which module in the search
-list exports it, no separate registry to build or keep in sync.
-""".
-find_codec(Key, Modules) ->
-    try binary_to_existing_atom(Key) of
-        Function -> find_module(Function, Modules)
+-spec find_decoder(pgc_client_types:descriptor(), #codec{}) -> {ok, fun((term()) -> iodata())} | error.
+find_decoder(#descriptor{kind = domain, parent = ParentTypeId}, Codec) when ParentTypeId =/= undefined ->
+    {ok, ParentDescriptor} = pgc_client_types:lookup(ParentTypeId, Codec#codec.types),
+    find_decoder(ParentDescriptor, Codec);
+find_decoder(#descriptor{recv = Recv} = Descriptor, Codec) ->
+    resolve(Recv, Descriptor, Codec).
+
+
+-spec resolve(Name, Descriptor, Codec) -> {ok, CodecFun} | error when
+    Name :: unicode:unicode_binary(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{},
+    CodecFun :: fun((term()) -> iodata()).
+resolve(Name, Descriptor, Codec) ->
+    try binary_to_existing_atom(Name) of
+        FunctionName ->
+            case find_codec_fun(FunctionName, Codec#codec.modules) of
+                {ok, Fun} when is_function(Fun, 1) ->
+                    {ok, Fun};
+                {ok, Fun} when is_function(Fun, 3) ->
+                    {ok, fun (Value) -> Fun(Value, Descriptor, Codec) end};
+                error ->
+                    error
+            end
     catch
         error:badarg -> error
     end.
 
-find_module(_Function, []) ->
+
+-spec find_codec_fun(Name, Modules) -> {ok, CodecFun} | error when
+    Name :: atom(),
+    Modules :: [module()],
+    CodecFun :: fun((term()) -> iodata()) | fun((term(), pgc_client_types:descriptor(), #codec{}) -> iodata()).
+find_codec_fun(_Name, [] = _Modules) ->
     error;
-find_module(Function, [Module | Rest]) ->
-    % Every module here was already loaded by new/2 -- function_exported/3 only ever answers
-    % against already-loaded code, but by construction that's never in question at this point.
-    case erlang:function_exported(Module, Function, 3) of
-        true -> {ok, Module, Function};
-        false -> find_module(Function, Rest)
+find_codec_fun(Name, [Module | Rest]) ->
+    case erlang:function_exported(Module, Name, 3) of
+        true ->
+            {ok, fun Module:Name/3};
+        false ->
+            case erlang:function_exported(Module, Name, 1) of
+                true -> {ok, fun Module:Name/1};
+                false -> find_codec_fun(Name, Rest)
+            end
     end.

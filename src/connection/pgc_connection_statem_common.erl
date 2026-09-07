@@ -179,10 +179,12 @@ format_status(Status) ->
 -spec connection_info(term(), #data{}) -> pgc_connection:connection_info().
 connection_info(_State, ConnectionData) ->
     #data{
-        backend_parameters = BackendParameters
+        backend_parameters = BackendParameters,
+        status = Status
     } = ConnectionData,
     #{
-        parameters => BackendParameters
+        parameters => BackendParameters,
+        status => Status
     }.
 
 -doc """

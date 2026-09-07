@@ -1,10 +1,16 @@
 -module(pgc_connection).
+-moduledoc """
+A generic postgresql connection behaviour.
+""".
+
 -export([
     start_link/3,
     start_link/4,
     stop/1,
     call/3,
-    cast/2
+    cast/2,
+    send_request/2,
+    check_response/2
 ]).
 -export_type([
     start_options/0,
@@ -14,7 +20,8 @@
     connection_info/0,
     row_description/0,
     execute_parameters/0,
-    execute_options/0
+    execute_options/0,
+    request_id/0
 ]).
 
 -define(DEFAULT_PING_INTERVAL, 5000).
@@ -153,9 +160,9 @@ The connection is about to stop. No further callbacks follow.
 -type connection_name() :: gen_statem:server_name().
 -type connection_ref() :: gen_statem:server_ref().
 -type connection_info() :: #{
-    % phase := connection_phase(),
     % backend_key := {non_neg_integer(), binary()} | undefined,
-    parameters := #{binary() => binary()}
+    parameters := #{binary() => binary()},
+    status := idle | transaction | error
 }.
 
 -type row_description() :: [pgc_protocol_message:row_description_field()].
@@ -207,6 +214,15 @@ call(ConnectionRef, Request, Timeout) ->
 cast(ConnectionRef, Request) ->
     gen_statem:cast(ConnectionRef, Request).
 
+
+-spec send_request(connection_ref(), term()) -> request_id().
+-opaque request_id() :: gen_statem:request_id().
+send_request(ConnectionRef, Request) ->
+    gen_statem:send_request(ConnectionRef, Request).
+
+-spec check_response(term(), request_id()) -> no_reply | {reply, Reply :: term()} | {error, {Reason :: term(), connection_ref()}}.
+check_response(Message, RequestId) ->
+    gen_statem:check_response(Message, RequestId).
 
 % -----------------------------------------------------------------------------
 % Helpers

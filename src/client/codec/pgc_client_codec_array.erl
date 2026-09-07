@@ -3,33 +3,51 @@
 
 -export([
     encode/3,
-    decode/2
+    decode/3
 ]).
 
--spec encode(list(), pgc_protocol:oid(), fun((term()) -> iodata() | null)) -> iodata().
-encode(List, ElementOid, EncodeElement) when is_list(List) ->
-    {Flags, EncodedElements} = encode_elements(EncodeElement, lists:flatten(List), 0, []),
-    [encode_header(ElementOid, Flags, List) | EncodedElements].
+-import_record(pgc_client_codec, [codec]).
+-import_record(pgc_client_types, [descriptor]).
 
 
--spec decode(binary(), fun((binary()) -> term())) -> list().
-decode(Data, DecodeElement) ->
-    {Lengths, Rest} = decode_header(Data),
-    Elements = decode_elements(DecodeElement, Rest, []),
-    unflatten(Lengths, Elements).
+-spec encode(Values, Descriptor, Codec) -> iodata() when
+    Values :: list(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{}.
+encode(Array, #descriptor{element = ElementTypeId}, Codec) when is_list(Array) ->
+    EncodeValue = fun(Value) -> pgc_client_codec:encode(ElementTypeId, Value, Codec) end,
+    {Flags, EncodedValues} = encode_values(EncodeValue, Array),
+    [encode_header(ElementTypeId, Flags, Array) | EncodedValues].
 
+
+-spec decode(Data, Descriptor, Codec) -> list() when
+    Data :: binary(),
+    Descriptor :: pgc_client_types:descriptor(),
+    Codec :: #codec{}.
+decode(Data, #descriptor{element = ElementTypeId}, Codec) ->
+    DecodeValue = fun(Datum) -> pgc_client_codec:decode(ElementTypeId, Datum, Codec) end,
+    decode(Data, DecodeValue).
+
+
+-spec decode(Data, DecodeValue) -> [Element] when
+    Data :: binary(),
+    DecodeValue :: fun((binary()) -> Element).
+decode(Data, DecodeValue) ->
+    {Lengths, Payload} = decode_header(Data),
+    Values = decode_values(DecodeValue, Payload),
+    unflatten(Lengths, Values).
 
 % ------------------------------------------------------------------------------
 % Encoding
 % ------------------------------------------------------------------------------
 
-encode_header(ElementOid, Flags, Value) ->
-    Lengths = lengths(Value, []),
+encode_header(ElementTypeId, Flags, Values) ->
+    Lengths = lengths(Values, []),
     Dims = length(Lengths),
     <<
         Dims:32/signed-integer,
         Flags:32/signed-integer,
-        ElementOid:32/signed-integer,
+        ElementTypeId:32/signed-integer,
         << <<Length:32/signed-integer, 1:32/signed-integer>> || Length <- Lengths >>/binary
     >>.
 
@@ -42,36 +60,25 @@ lengths([H | _] = Value, Acc) when is_list(H) ->
 lengths(Value, Acc) ->
     lists:reverse([length(Value) | Acc]).
 
-encode_elements(_EncodeElement, [], Flags, Acc) ->
+encode_values(EncodeValue, Values) ->
+    encode_values(EncodeValue, lists:flatten(Values), 0, []).
+
+encode_values(_EncodeValue, [], Flags, Acc) ->
     {Flags, lists:reverse(Acc)};
-encode_elements(EncodeElement, [null | Rest], Flags, Acc) ->
-    encode_elements(EncodeElement, Rest, Flags bor 1, [<<-1:32/signed-integer>> | Acc]);
-encode_elements(EncodeElement, [Value | Rest], Flags, Acc) ->
-    Encoded = EncodeElement(Value),
-    encode_elements(EncodeElement, Rest, Flags, [[<<(iolist_size(Encoded)):32/signed-integer>>, Encoded] | Acc]).
+encode_values(EncodeValue, [null | Rest], Flags, Acc) ->
+    encode_values(EncodeValue, Rest, Flags bor 1, [<<-1:32/signed-integer>> | Acc]);
+encode_values(EncodeValue, [Value | Rest], Flags, Acc) ->
+    Encoded = EncodeValue(Value),
+    encode_values(EncodeValue, Rest, Flags, [[<<(iolist_size(Encoded)):32/signed-integer>>, Encoded] | Acc]).
 
 
 % ------------------------------------------------------------------------------
 % Decoding
 % ------------------------------------------------------------------------------
 
--doc "Convert the 1-d elements list into a multi-dimensional list according to the array lengths.".
-unflatten([Length | Lengths], Elements) ->
-    unflatten(Lengths, split(Length, Elements, []));
-unflatten([], [Elements]) ->
-    Elements;
-unflatten([], []) ->
-    [].
-
--doc "Split a list into sublists of equal size.".
-split(_Length, [], Acc) ->
-    lists:reverse(Acc);
-split(Length, Elements, Acc) ->
-    {Chunk, Rest} = lists:split(Length, Elements),
-    split(Length, Rest, [Chunk | Acc]).
-
 decode_header(<<Dims:32/signed-integer, _Flags:32/signed-integer, _ElementOid:32/signed-integer, Rest/binary>>) ->
     decode_lengths(Dims, [], Rest).
+
 
 decode_lengths(0, Lengths, Payload) ->
     {Lengths, Payload};
@@ -79,9 +86,26 @@ decode_lengths(Dims, Lengths, <<Length:32/signed-integer, LowerBound:32/signed-i
     1 = LowerBound,
     decode_lengths(Dims - 1, [Length | Lengths], Rest).
 
-decode_elements(_DecodeElement, <<>>, Acc) ->
-    lists:reverse(Acc);
-decode_elements(DecodeElement, <<-1:32/signed-integer, Rest/binary>>, Acc) ->
-    decode_elements(DecodeElement, Rest, [null | Acc]);
-decode_elements(DecodeElement, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>, Acc) ->
-    decode_elements(DecodeElement, Rest, [DecodeElement(Data) | Acc]).
+
+decode_values(_DecodeValue, <<>>) ->
+    [];
+decode_values(DecodeValue, <<-1:32/signed-integer, Rest/binary>>) ->
+    [null | decode_values(DecodeValue, Rest)];
+decode_values(DecodeValue, <<Size:32/signed-integer, Data:Size/binary, Rest/binary>>) ->
+    [DecodeValue(Data) | decode_values(DecodeValue, Rest)].
+
+
+unflatten([Length | Lengths], Elements) ->
+    unflatten(Lengths, split(Length, Elements));
+unflatten([], [Elements]) ->
+    Elements;
+unflatten([], []) ->
+    [].
+
+
+-doc "Split a list into sublists of equal size.".
+split(_Length, []) ->
+    [];
+split(Length, Elements) ->
+    {Chunk, Rest} = lists:split(Length, Elements),
+    [Chunk | split(Length, Rest)].
