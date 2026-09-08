@@ -1,23 +1,44 @@
 -module(pgc_client_options).
 -moduledoc """
-Builds `t:pgc_client:start_options/0` maps, suitable for `pgc:start_link/2,3`.
+Builds `t:t/0` maps, suitable for `pgc_client:start_link/1,2` (and, through it,
+`pgc:start_link/2,3`).
 """.
 
 -export([
     from_uri/1
 ]).
+-export_type([
+    t/0
+]).
+
+-type t() :: #{
+    address := pgc_transport:address(),
+    tls => disable | prefer | require,
+    tls_options => [ssl:tls_client_option()],
+    connect_timeout => timeout(),
+    ping_interval => timeout(),
+
+    user := unicode:chardata(),
+    password => unicode:chardata() | fun(() -> unicode:chardata()),
+    database := unicode:chardata(),
+    parameters => #{
+        atom() => unicode:chardata()
+    }
+}.
 
 -define(DEFAULT_PORT, 5432).
--define(SESSION_PARAMETERS, #{
-    ~"application_name" => application_name,
-    ~"client_encoding" => client_encoding,
-    ~"datestyle" => datestyle,
-    ~"timezone" => timezone,
-    ~"search_path" => search_path,
-    ~"options" => options,
-    ~"replication" => replication
-}).
+-define(DEFAULT_PING_INTERVAL, 30_000).
 
+% -----------------------------------------------------------------------------
+% Types
+% -----------------------------------------------------------------------------
+
+-type query() :: #{unicode:chardata() => unicode:chardata() | true}.
+
+
+% -----------------------------------------------------------------------------
+% API
+% -----------------------------------------------------------------------------
 
 -doc """
 Parses a PostgreSQL connection URI, as documented at
@@ -30,78 +51,134 @@ parameters plus a fixed set of session parameters (`application_name`, `client_e
 string is rejected rather than silently dropped, since a typo'd or unsupported parameter
 (`sslrootcert`, `target_session_attrs`, ...) failing loudly beats it being quietly ignored.
 """.
--spec from_uri(unicode:chardata()) -> {ok, pgc_client:start_options()} | {error, Reason} when
-    Reason :: {invalid_uri, {atom(), term()}}
-            | {invalid_scheme, unicode:unicode_binary()}
-            | {invalid_sslmode, unicode:unicode_binary()}
-            | {invalid_port | invalid_connect_timeout, unicode:unicode_binary()}
-            | {unsupported_parameters, [unicode:unicode_binary()]}
-            | missing_user.
+-spec from_uri(unicode:chardata()) -> {ok, t()} | {error, from_uri_error()}.
+-type from_uri_error() ::
+    {invalid_uri, {atom(), term()}}
+    | {invalid_scheme, unicode:chardata()}
+    | {invalid_port, unicode:chardata()}
+    | {invalid_userinfo, unicode:chardata()}
+    | {invalid_parameter, unicode:chardata(), unicode:chardata() | true}
+    | {unsupported_parameter, unicode:chardata()}.
 from_uri(Uri) ->
-    try
-        {ok, decode(unicode:characters_to_binary(Uri))}
-    catch
-        throw:Reason -> {error, Reason}
-    end.
-
-
-decode(Uri) ->
-    case uri_string:parse(Uri) of
+    case uri_string:normalize(pgc_string:characters_to_binary(Uri), [return_map]) of
         {error, Type, Term} ->
-            throw({invalid_uri, {Type, Term}});
-        #{scheme := Scheme} = Parsed ->
-            ok = check_scheme(Scheme),
-            options(Parsed)
-    end.
-
-check_scheme(Scheme) ->
-    case string:lowercase(Scheme) of
-        ~"postgresql" -> ok;
-        ~"postgres" -> ok;
-        _ -> throw({invalid_scheme, Scheme})
-    end.
-
-
-options(Parsed) ->
-    Query = maps:from_list(uri_string:dissect_query(maps:get(query, Parsed, ~""))),
-    ok = check_supported_parameters(Query),
-    {User, Password} = userinfo(maps:get(userinfo, Parsed, undefined)),
-    User =/= undefined orelse throw(missing_user),
-    Required = #{
-        address => address(Parsed, Query),
-        user => User,
-        database => database(maps:get(path, Parsed, ~""), User)
-    },
-    Optional = maps:filter(fun (_Key, Value) -> Value =/= undefined end, #{
-        password => Password,
-        tls => tls(Query),
-        connect_timeout => connect_timeout(Query)
-    }),
-    Options = maps:merge(Required, Optional),
-    case session_parameters(Query) of
-        Parameters when map_size(Parameters) =:= 0 -> Options;
-        Parameters -> Options#{parameters => Parameters}
-    end.
-
-check_supported_parameters(Query) ->
-    KnownKeys = [~"host", ~"port", ~"sslmode", ~"connect_timeout" | maps:keys(?SESSION_PARAMETERS)],
-    case maps:keys(maps:without(KnownKeys, Query)) of
-        [] -> ok;
-        Unsupported -> throw({unsupported_parameters, Unsupported})
+            {error, {invalid_uri, {Type, Term}}};
+        #{scheme := Scheme} = UriMap when Scheme =:= ~"postgresql"; Scheme =:= ~"postgres" ->
+            case uri_string:dissect_query(maps:get(query, UriMap, ~"")) of
+                {error, Type, Term} ->
+                    {error, {invalid_uri, {Type, Term}}};
+                Q ->
+                    Query = maps:from_list(Q),
+                    with_address(UriMap, Query, #{})
+            end;
+        #{scheme := Scheme} ->
+            {error, {invalid_scheme, Scheme}}
     end.
 
 
--doc """
-Splits `user[:password]` -- percent-decoding each half only *after* splitting, so a literal `:`
-or `@` encoded within the user name or password isn't mistaken for a delimiter.
-""".
-userinfo(undefined) ->
-    {undefined, undefined};
-userinfo(UserInfo) ->
-    case binary:split(UserInfo, ~":") of
-        [User] -> {uri_string:unquote(User), undefined};
-        [User, Password] -> {uri_string:unquote(User), uri_string:unquote(Password)}
+-spec with_address(uri_string:uri_map(), query(), #{}) -> {ok, t()} | {error, from_uri_error()}.
+with_address(UriMap, Query, Acc) ->
+    case address(UriMap, Query) of
+        {ok, Address} ->
+            with_userinfo(UriMap, Query, Acc#{address => Address});
+        {error, Reason} ->
+            {error, Reason}
     end.
+
+
+with_userinfo(UriMap, Query, #{address := _Address} = Acc) ->
+    case userinfo(UriMap, Query) of
+        {ok, UserInfo} ->
+            with_database(UriMap, Query, maps:merge(Acc, UserInfo));
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+
+with_database(UriMap, Query, #{user := User} = Acc) ->
+    case database(UriMap, Query) of
+        {ok, Database} ->
+            with_parameters(UriMap, Query, Acc#{
+                database => case Database of
+                    undefined -> User;
+                    _ -> Database
+                end
+            });
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+
+-spec with_parameters(uri_string:uri_map(), query(), t()) -> {ok, t()} | {error, from_uri_error()}.
+with_parameters(_UriMap, Query, Options) when is_map(Query) ->
+    maps:fold(fun
+        (_Key, _Value, {error, _} = Error) ->
+            Error;
+        (~"host", _Value, {ok, Acc}) ->
+            {ok, Acc};
+        (~"port", _Value, {ok, Acc}) ->
+            {ok, Acc};
+        (~"sslmode", Value, {ok, Acc}) ->
+            case parse_sslmode(Value) of
+                {ok, SslMode} -> {ok, maps:merge(Acc, SslMode)};
+                error -> {error, {invalid_parameter, ~"sslmode", Value}}
+            end;
+        (~"connect_timeout", Value, {ok, Acc}) ->
+            case parse_timeout(Value) of
+                {ok, Timeout} -> {ok, Acc#{connect_timeout => Timeout}};
+                error -> {error, {invalid_parameter, ~"connect_timeout", Value}}
+            end;
+
+        (~"application_name", Value, {ok, Acc}) ->
+            with_string_parameter(application_name, Value, Acc);
+        (~"client_encoding", Value, {ok, Acc}) ->
+            with_string_parameter(client_encoding, Value, Acc);
+        (~"datestyle", Value, {ok, Acc}) ->
+            with_string_parameter(datestyle, Value, Acc);
+        (~"timezone", Value, {ok, Acc}) ->
+            with_string_parameter(timezone, Value, Acc);
+        (~"search_path", Value, {ok, Acc}) ->
+            with_string_parameter(search_path, Value, Acc);
+        (~"options", Value, {ok, Acc}) ->
+            with_string_parameter(options, Value, Acc);
+        (~"keepalives", Value, {ok, Acc}) ->
+            case Value of
+                ~"1" ->
+                    case Acc of
+                        #{ping_interval := Interval} when Interval =/= infinity ->
+                            {ok, Acc};
+                        #{} ->
+                            {ok, Acc#{ping_interval => ?DEFAULT_PING_INTERVAL}}
+                    end;
+                ~"0" ->
+                    {ok, Acc#{ping_interval => infinity}};
+                Other ->
+                    {error, {invalid_parameter, ~"keepalives_idle", Other}}
+            end;
+        (~"keepalives_idle", Value, {ok, Acc}) ->
+            case parse_timeout(Value) of
+                {ok, 0} ->
+                    {ok, Acc#{ping_interval => ?DEFAULT_PING_INTERVAL}};
+                {ok, Timeout} ->
+                    {ok, Acc#{ping_interval => Timeout}};
+                error ->
+                    {error, {invalid_parameter, ~"keepalives_idle", Value}}
+            end;
+        (Key, _Value, {ok, _Acc}) ->
+            {error, {unsupported_parameter, Key}}
+    end, {ok, Options}, Query).
+
+
+-spec with_string_parameter(atom(), unicode:chardata() | true, t()) -> {ok, t()} | {error, from_uri_error()}.
+with_string_parameter(Name, true = Value, _Options) ->
+    {error, {invalid_parameter, atom_to_binary(Name), Value}};
+with_string_parameter(Name, Value, Options) ->
+    Parameters = maps:get(parameters, Options, #{}),
+    {ok, Options#{
+        parameters => Parameters#{
+            Name => Value
+        }
+    }}.
 
 
 -doc """
@@ -110,96 +187,163 @@ own `postgresql://%2Fvar%2Frun%2Fpostgresql/mydb` / `postgresql:///mydb?host=/va
 conventions -- the latter's `host` query parameter is only consulted when the URI has no
 authority host of its own to begin with.
 """.
-address(Parsed, Query) ->
-    Host = case maps:get(host, Parsed, ~"") of
-        ~"" -> maps:get(~"host", Query, ~"");
-        EncodedHost -> uri_string:unquote(EncodedHost)
-    end,
-    case Host of
-        <<"/", _/binary>> -> #{path => Host};
-        ~"" -> #{host => "localhost", port => port(Parsed, Query)};
-        _ -> #{host => unicode:characters_to_list(Host), port => port(Parsed, Query)}
-    end.
-
-port(Parsed, Query) ->
-    case maps:get(port, Parsed, undefined) of
-        undefined ->
-            case maps:find(~"port", Query) of
-                error -> ?DEFAULT_PORT;
-                {ok, Text} -> positive_integer(Text, invalid_port)
-            end;
-        Port -> Port
-    end.
-
-
-database(Path, User) ->
-    case uri_string:unquote(Path) of
-        ~"" -> User;
-        <<"/", Rest/binary>> -> Rest;
-        Other -> Other
-    end.
-
-
-tls(Query) ->
-    case maps:find(~"sslmode", Query) of
-        error -> undefined;
-        {ok, ~"disable"} -> disable;
-        {ok, Mode} when Mode =:= ~"allow"; Mode =:= ~"prefer" -> prefer;
-        % ponytail: `verify-ca`/`verify-full` collapse to plain `require` (encrypted, unverified)
-        % since `pgc_client:start_options()`'s `tls` knob has no verify granularity of its own --
-        % real certificate verification needs `tls_options` (CA file, hostname check, ...), which
-        % this URI parser doesn't accept params for. Add `sslrootcert`/`sslcert`/`sslkey` query
-        % parameters, translated into `tls_options`, if verified TLS over a URI is needed.
-        {ok, Mode} when Mode =:= ~"require"; Mode =:= ~"verify-ca"; Mode =:= ~"verify-full" -> require;
-        {ok, Mode} -> throw({invalid_sslmode, Mode})
-    end.
-
-
-connect_timeout(Query) ->
-    case maps:find(~"connect_timeout", Query) of
-        error -> undefined;
-        {ok, Text} ->
-            case positive_integer(Text, invalid_connect_timeout) of
-                Seconds when Seconds =< 0 -> infinity;
-                % libpq's own rule: values below 2s are bumped up to the 2s minimum rather than
-                % rejected.
-                Seconds -> max(Seconds, 2) * 1000
+-spec address(UriMap, Query) -> {ok, pgc_transport:address()} | {error, from_uri_error()} when
+    UriMap :: uri_string:uri_map(),
+    Query :: query().
+address(UriMap, Query) ->
+    case host(UriMap, Query) of
+        {ok, <<"/", _/binary>> = Path} ->
+            {ok, #{path => pgc_string:characters_to_binary(uri_string:unquote(Path))}};
+        {ok, Host} ->
+            case port(UriMap, Query) of
+                {ok, Port} when Host =/= ~"" ->
+                    {ok, #{host => pgc_string:characters_to_list(Host), port => Port}};
+                {ok, Port}  ->
+                    % TODO: default to unix socket path on unix and localhost on windows
+                    {ok, #{host => "localhost", port => Port}};
+                {error, _} = Error ->
+                    Error
             end
     end.
 
-positive_integer(Text, ErrorTag) ->
-    case string:to_integer(Text) of
-        {Int, ~""} -> Int;
-        _ -> throw({ErrorTag, Text})
+
+-spec host(UriMap, Query) -> {ok, unicode:chardata()} | {error, from_uri_error()} when
+    UriMap :: uri_string:uri_map(),
+    Query :: query().
+host(UriMap, Query) ->
+    case maps:get(host, UriMap, ~"") of
+        ~"" ->
+            case maps:get(~"host", Query, ~"") of
+                Host when is_binary(Host) -> {ok, Host};
+                true -> {ok, ~""}
+            end;
+        Host ->
+            {ok, uri_string:unquote(Host)}
     end.
 
 
-session_parameters(Query) ->
-    maps:fold(fun (QueryKey, Name, Acc) ->
-        case maps:find(QueryKey, Query) of
-            {ok, Value} -> Acc#{Name => Value};
-            error -> Acc
-        end
-    end, #{}, ?SESSION_PARAMETERS).
+-spec port(UriMap, Query) -> {ok, inet:port_number()} | {error, from_uri_error()} when
+    UriMap :: uri_string:uri_map(),
+    Query :: query().
+port(UriMap, Query) ->
+    case UriMap of
+        #{port := Port} when is_integer(Port) ->
+            {ok, Port};
+        #{} ->
+            case maps:find(~"port", Query) of
+                {ok, PortString} when is_binary(PortString) ->
+                    case string:to_integer(PortString) of
+                        {Port, ~""} when Port >= 0; Port =< 16#ffff ->
+                            {ok, Port};
+                        _ ->
+                            {error, {invalid_port, PortString}}
+                    end;
+                {ok, true} ->
+                    {error, {invalid_port, ~""}};
+                error ->
+                    {ok, ?DEFAULT_PORT}
+            end
+    end.
+
+
+-spec userinfo(UriMap, Query) -> {ok, UserInfo} | {error, from_uri_error()} when
+    UriMap :: uri_string:uri_map(),
+    Query :: query(),
+    UserInfo :: #{user := unicode:chardata(), password => unicode:chardata()}.
+userinfo(#{userinfo := UserInfo}, _Query) ->
+    case binary:split(pgc_string:characters_to_binary(UserInfo), ~":") of
+        [User] ->
+            {ok, #{user => uri_string:unquote(User)}};
+        [User, Password] ->
+            {ok, #{user => uri_string:unquote(User), password => uri_string:unquote(Password)}};
+        _ ->
+            {error, {invalid_userinfo, UserInfo}}
+    end;
+userinfo(#{}, _Query) ->
+    {error, {invalid_userinfo, ~""}}.
+
+
+-spec database(UriMap, Query) -> {ok, Database | undefined} when
+    UriMap :: uri_string:uri_map(),
+    Query :: query(),
+    Database :: unicode:chardata().
+database(UriMap, _Query) ->
+    case UriMap of
+        #{path := ~""} -> {ok, undefined};
+        #{path := ~"/"} -> {ok, undefined};
+        #{path := <<"/", Rest/binary>>} -> {ok, Rest};
+        #{path := Path} -> {ok, Path}
+    end.
+
+
+-spec parse_sslmode(Value) -> {ok, TlsOptions} | error when
+    Value :: unicode:chardata() | true,
+    TlsOptions :: #{tls => disable | prefer | require, tls_options => [ssl:tls_client_option()]}.
+parse_sslmode(true) ->
+    error;
+parse_sslmode(Value) ->
+    case pgc_string:characters_to_binary(Value) of
+        ~"disable" ->
+            {ok, #{tls => disable}};
+        ~"allow" ->
+            {ok, #{tls => prefer, tls_options => [{verify, verify_none}]}};
+        ~"prefer" ->
+            {ok, #{tls => prefer, tls_options => [{verify, verify_none}]}};
+        ~"require" ->
+            {ok, #{tls => require, tls_options => [{verify, verify_none}]}};
+        ~"verify-ca" ->
+            {ok, #{
+                tls => require,
+                tls_options => [
+                    {verify, verify_peer},
+                    {cacerts, public_key:cacerts_get()}
+                ]
+            }};
+        ~"verify-full" ->
+            {ok, #{
+                tls => require,
+                tls_options => [
+                    {verify, verify_peer},
+                    {cacerts, public_key:cacerts_get()}
+                ]
+            }};
+        _Other ->
+            error
+    end.
+
+
+-spec parse_timeout(Value) -> {ok, Timeout} | error when
+    Value :: unicode:chardata() | true,
+    Timeout :: timeout().
+parse_timeout(true) ->
+    error;
+parse_timeout(Value) ->
+    case string:to_integer(Value) of
+        {Timeout, ~""} when Timeout >= 0 ->
+            {ok, erlang:convert_time_unit(Timeout, second, millisecond)};
+        _ ->
+            error
+    end.
 
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
 full_uri_test() ->
-    ?assertEqual({ok, #{
-        address => #{host => "localhost", port => 5433},
-        user => ~"user",
-        password => ~"p@ss",
-        database => ~"mydb",
-        tls => require,
-        connect_timeout => 10000,
-        parameters => #{application_name => ~"my app"}
+    ?assertMatch({ok, #{
+        address := #{host := "localhost", port := 5433},
+        user := ~"user",
+        password := ~"p@ss",
+        database := ~"mydb",
+        tls := require,
+        tls_options := [{verify, verify_none}],
+        connect_timeout := 10000,
+        parameters := #{application_name := ~"my app"}
     }}, pgc_client_options:from_uri(~"postgresql://user:p%40ss@localhost:5433/mydb?sslmode=require&connect_timeout=10&application_name=my%20app")).
 
 default_port_and_database_test() ->
     ?assertEqual({ok, #{
-        address => #{host => "localhost", port => 5432},
+        address => #{host => "localhost", port => ?DEFAULT_PORT},
         user => ~"postgres",
         database => ~"postgres"
     }}, pgc_client_options:from_uri(~"postgresql://postgres@localhost")).
@@ -226,17 +370,17 @@ ipv6_host_test() ->
         pgc_client_options:from_uri(~"postgresql://postgres@[::1]/mydb")).
 
 missing_user_test() ->
-    ?assertEqual({error, missing_user}, pgc_client_options:from_uri(~"postgresql://localhost/mydb")).
+    ?assertEqual({error, {invalid_userinfo, ~""}}, pgc_client_options:from_uri(~"postgresql://localhost/mydb")).
 
 invalid_scheme_test() ->
     ?assertEqual({error, {invalid_scheme, ~"mysql"}}, pgc_client_options:from_uri(~"mysql://user@localhost/mydb")).
 
 invalid_sslmode_test() ->
-    ?assertEqual({error, {invalid_sslmode, ~"verify-nope"}},
+    ?assertEqual({error, {invalid_parameter, ~"sslmode" , ~"verify-nope"}},
         pgc_client_options:from_uri(~"postgresql://user@localhost/mydb?sslmode=verify-nope")).
 
 unsupported_parameter_test() ->
-    ?assertEqual({error, {unsupported_parameters, [~"sslrootcert"]}},
+    ?assertEqual({error, {unsupported_parameter, ~"sslrootcert"}},
         pgc_client_options:from_uri(~"postgresql://user@localhost/mydb?sslrootcert=/root.crt")).
 
 invalid_uri_test() ->

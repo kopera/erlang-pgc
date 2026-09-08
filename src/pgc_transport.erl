@@ -180,13 +180,13 @@ has switched it to `true`/`once`). `Timeout` bounds the wait.
 -spec recv(t(), timeout()) -> {ok, binary()} | {error, error()}.
 recv(#tcp_transport{socket = Socket}, Timeout) ->
     case gen_tcp:recv(Socket, 0, Timeout) of
-        {ok, Data} -> {ok, Data};
+        {ok, Data} when is_binary(Data) -> {ok, Data};
         % elp:ignore W0027
         {error, Reason} -> {error, #error{reason = tcp_socket_error(Reason)}}
     end;
 recv(#tls_transport{socket = Socket}, Timeout) ->
     case ssl:recv(Socket, 0, Timeout) of
-        {ok, Data} -> {ok, Data};
+        {ok, Data} when is_binary(Data) -> {ok, Data};
         % elp:ignore W0027
         {error, Reason} -> {error, #error{reason = tls_socket_error(Reason)}}
     end.

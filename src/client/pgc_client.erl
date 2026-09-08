@@ -17,7 +17,6 @@ sending queries to the PostgreSQL server.
     reset/1
 ]).
 -export_type([
-    start_options/0,
     statement_text/0,
     statement_parameters/0,
     execute_options/0,
@@ -88,22 +87,7 @@ sending queries to the PostgreSQL server.
 -doc """
 Start a new postgresql client connection.
 """.
--type start_options() :: #{
-    address := pgc_transport:address(),
-    tls => disable | prefer | require,
-    tls_options => [ssl:tls_client_option()],
-    connect_timeout => timeout(),
-    ping_interval => timeout(),
-
-    user := unicode:chardata(),
-    password => unicode:chardata() | fun(() -> unicode:chardata()),
-    database := unicode:chardata(),
-    parameters => #{
-        replication => none(),
-        atom() => unicode:chardata()
-    }
-}.
--spec start_link(start_options()) -> pgc_connection:start_ret().
+-spec start_link(pgc_client_options:t()) -> pgc_connection:start_ret().
 start_link(Options) ->
     pgc_connection:start_link(?MODULE, [], Options).
 
@@ -115,7 +99,7 @@ the provided `ClientName`.
 `ClientName` specifies the `t:pgc_connection:connection_name/0` to
 register for the `m:pgc_connection` process.
 """.
--spec start_link(pgc_connection:connection_name(), start_options()) -> pgc_connection:start_ret().
+-spec start_link(pgc_connection:connection_name(), pgc_client_options:t()) -> pgc_connection:start_ret().
 start_link(ClientName, Options) ->
     pgc_connection:start_link(ClientName, ?MODULE, [], Options).
 

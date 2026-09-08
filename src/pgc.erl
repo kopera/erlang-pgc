@@ -18,23 +18,23 @@
 ]).
 
 
--spec start_link(pgc_connection:start_options(), pgc_pool:options()) -> {ok, pid()}.
+-spec start_link(pgc_client_options:t(), pgc_pool:options()) -> {ok, pid()}.
 start_link(ConnectionOptions, PoolOptions) ->
     pgc_pool:start_link(ConnectionOptions, PoolOptions).
 
 
--spec start_link(pgc_pool:pool_name(), pgc_connection:start_options(), pgc_pool:options()) -> {ok, pid()}.
+-spec start_link(pgc_pool:pool_name(), pgc_client_options:t(), pgc_pool:options()) -> {ok, pid()}.
 start_link(Name, ConnectionOptions, PoolOptions) ->
     pgc_pool:start_link(Name, ConnectionOptions, PoolOptions).
 
 
--spec child_spec(Id, pgc_connection:start_options(), pgc_pool:options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pgc_client_options:t(), pgc_pool:options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, ConnectionOptions, PoolOptions) ->
     pgc_pool:child_spec(Id, ConnectionOptions, PoolOptions).
 
 
--spec child_spec(Id, pgc_pool:pool_name(), pgc_connection:start_options(), pgc_pool:options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pgc_pool:pool_name(), pgc_client_options:t(), pgc_pool:options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, Name, ConnectionOptions, PoolOptions) ->
     pgc_pool:child_spec(Id, Name, ConnectionOptions, PoolOptions).

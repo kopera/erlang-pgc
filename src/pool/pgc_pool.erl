@@ -24,7 +24,7 @@
 ]).
 
 
--spec start_link(pgc_connection:start_options(), options()) -> {ok, pid()}.
+-spec start_link(pgc_client_options:t(), options()) -> {ok, pid()}.
 start_link(ConnectionOptions, PoolOptions) ->
     {ok, _} = supervisor:start_link(?MODULE, {
         ConnectionOptions,
@@ -32,7 +32,7 @@ start_link(ConnectionOptions, PoolOptions) ->
     }).
 
 
--spec start_link(pool_name(), pgc_connection:start_options(), options()) -> {ok, pid()}.
+-spec start_link(pool_name(), pgc_client_options:t(), options()) -> {ok, pid()}.
 -type pool_name() :: supervisor:sup_name().
 -type options() :: #{
     max_size => pos_integer()
@@ -44,7 +44,7 @@ start_link(Name, ConnectionOptions, PoolOptions) ->
     }).
 
 
--spec child_spec(Id, pgc_connection:start_options(), options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pgc_client_options:t(), options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, ConnectionOptions, PoolOptions) ->
     #{
@@ -54,7 +54,7 @@ child_spec(Id, ConnectionOptions, PoolOptions) ->
     }.
 
 
--spec child_spec(Id, pool_name(), pgc_connection:start_options(), options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pool_name(), pgc_client_options:t(), options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, Name, ConnectionOptions, PoolOptions) ->
     #{
@@ -133,7 +133,7 @@ manager_pid(PoolRef) ->
 
 -doc false.
 -spec init({ClientOptions, PoolOptions}) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}} when
-    ClientOptions :: pgc_client:start_options(),
+    ClientOptions :: pgc_client_options:t(),
     PoolOptions :: options().
 init({ClientOptions, PoolOptions}) ->
     Supervisor = self(),

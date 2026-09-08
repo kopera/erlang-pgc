@@ -90,7 +90,7 @@ handle_continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
                 {binding, ?gs2_header},
                 {nonce, ServerNonce}
             ]),
-            Password = characters_to_binary(PasswordFun()),
+            Password = pgc_string:characters_to_binary(PasswordFun()),
             SaltedPassword = hi(HashingAlgorithm, Password, Salt, Iterations),
             ClientKey = crypto:mac(hmac, HashingAlgorithm, SaltedPassword, <<"Client Key">>),
             StoredKey = crypto:hash(HashingAlgorithm, ClientKey),
@@ -185,7 +185,7 @@ decode_username(<<>>, Acc) ->
 
 -spec encode_username(unicode:chardata()) -> binary().
 encode_username(Username) ->
-    encode_username(characters_to_binary(Username), <<>>).
+    encode_username(pgc_string:characters_to_binary(Username), <<>>).
 
 encode_username(<<$,, Rest/binary>>, Acc) ->
     encode_username(Rest, <<Acc/binary, "=2C">>);
@@ -238,16 +238,3 @@ encode_error(other_error)-> <<"other-error">>.
 hi(HashingAlgorithm, Password, Salt, Iterations) ->
     #{size := KeyLen} = crypto:hash_info(HashingAlgorithm),
     crypto:pbkdf2_hmac(HashingAlgorithm, Password, Salt, Iterations, KeyLen).
-
-
-% ------------------------------------------------------------------------------
-% Helpers
-% ------------------------------------------------------------------------------
-
--spec characters_to_binary(unicode:chardata()) -> unicode:unicode_binary().
-characters_to_binary(Input) ->
-    case unicode:characters_to_binary(Input) of
-        {error, _, _} -> erlang:error(badarg, [Input]);
-        {incomplete, _, _} -> erlang:error(badarg, [Input]);
-        UnicodeBinary -> UnicodeBinary
-    end.

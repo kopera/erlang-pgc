@@ -13,7 +13,7 @@
 
 
 -spec start_link(ClientOptions) -> {ok, pid()} when
-    ClientOptions :: pgc_client:start_options().
+    ClientOptions :: pgc_client_options:t().
 start_link(ClientOptions) ->
     {ok, _} = supervisor:start_link(?MODULE, ClientOptions).
 
@@ -33,7 +33,7 @@ start_connection(Supervisor) ->
 
 -doc false.
 -spec init(ClientOptions) -> {ok, {Flags, [ChildSpec]}} when
-    ClientOptions :: pgc_client:start_options(),
+    ClientOptions :: pgc_client_options:t(),
     Flags :: supervisor:sup_flags(),
     ChildSpec :: supervisor:child_spec().
 init(ClientOptions) ->
