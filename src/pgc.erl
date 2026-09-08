@@ -112,7 +112,7 @@ transaction(PoolRef, Transaction, Options) when is_function(Transaction, 1) ->
                 end
             end, #{});
         _ ->
-            erlang:error(in_transaction, [PoolRef, Transaction, Options], [
+            erlang:error({pgc, in_transaction}, [PoolRef, Transaction, Options], [
                 {error_info, #{
                     cause => #{
                         general => "cannot start a new transaction inside an existing transaction"
@@ -127,7 +127,7 @@ with_transaction(TransactionRef, Fun) ->
         {TransactionRef, ClientPid} ->
             Fun(ClientPid);
         _ ->
-            erlang:error(not_in_transaction, none, [
+            erlang:error({pgc, not_in_transaction}, none, [
                 {error_info, #{
                     cause => #{
                         1 => "invalid transaction id",

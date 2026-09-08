@@ -105,13 +105,13 @@ with_client(PoolRef, Action, Options) ->
                 pgc_pool_manager:checkin(ManagerRef, ConnectionPid)
             end;
         {error, timeout} ->
-            error(pool_timeout, [PoolRef, Action, Options], [{error_info,  #{
+            erlang:error({pgc, pool_timeout}, [PoolRef, Action, Options], [{error_info,  #{
                 cause => #{
                     general => "Connection checkout timed out"
                 }
             }}]);
         {error, #{message := Message}} ->
-            error(pool_error, [PoolRef, Action, Options], [{error_info,  #{
+            erlang:error({pgc, pool_error}, [PoolRef, Action, Options], [{error_info,  #{
                 cause => #{
                     general => Message
                 }

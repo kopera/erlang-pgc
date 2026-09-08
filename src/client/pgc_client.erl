@@ -362,7 +362,7 @@ transaction(ClientRef, Fun, Options) ->
         {ok, #{command := ~"start transaction"}} ->
             ok;
         {error, #{} = StartError} ->
-            erlang:error({transaction_start_failed, StartError}, [ClientRef, Fun, Options])
+            erlang:error({pgc, {transaction_start_failed, StartError}}, [ClientRef, Fun, Options])
     end,
     try Fun() of
         {commit, Result} ->
@@ -370,7 +370,7 @@ transaction(ClientRef, Fun, Options) ->
                 {ok, #{command := ~"commit"}} ->
                     Result;
                 {ok, #{command := ~"rollback"}} ->
-                    erlang:error(bad_transaction, [ClientRef, Fun, Options], [
+                    erlang:error({pgc, bad_transaction}, [ClientRef, Fun, Options], [
                         {error_info, #{
                             cause => #{
                                 general => "Transaction fun returned successfully from a failed transaction",
@@ -379,14 +379,14 @@ transaction(ClientRef, Fun, Options) ->
                         }}
                     ]);
                 {error, #{} = CommitError} ->
-                    erlang:error({transaction_commit_failed, CommitError}, [ClientRef, Fun, Options])
+                    erlang:error({pgc, {transaction_commit_failed, CommitError}}, [ClientRef, Fun, Options])
             end;
         {rollback, Result} ->
             case execute_simple(ClientRef, ~"rollback") of
                 {ok, #{command := ~"rollback"}} ->
                     Result;
                 {error, #{} = RollbackError} ->
-                    erlang:error({transaction_rollback_failed, RollbackError}, [ClientRef, Fun, Options])
+                    erlang:error({pgc, {transaction_rollback_failed, RollbackError}}, [ClientRef, Fun, Options])
             end
     catch
         Class:Error:Stacktrace ->
@@ -682,11 +682,7 @@ handle_execute_result(ConnectionInfo, RequestId, Result, State) ->
 statement_name(#{cache := {true, Key}}) when is_atom(Key) ->
     atom_to_binary(Key);
 statement_name(#{cache := {true, Key}}) ->
-    case unicode:characters_to_binary(Key) of
-        Binary when is_binary(Binary) -> Binary;
-        {error, _, _} -> erlang:error(badarg, [Key]);
-        {incomplete, _, _} -> erlang:error(badarg, [Key])
-    end;
+    pgc_string:characters_to_binary(Key);
 statement_name(#{}) ->
     ~"".
 

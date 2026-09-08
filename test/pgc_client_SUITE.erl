@@ -355,7 +355,7 @@ execute_missing_codec_crashes_connection_test(Config) ->
     % silently returning something wrong. Decoding happens in the caller's own process (see
     % collect/7), so this crashes the caller, not the shared connection -- which stays usable
     % for every other (unrelated) caller.
-    ?assertError({missing_decoder, _}, pgc_client:execute(Connection, "select point(1,2) as t", [])),
+    ?assertError({pgc, {missing_decoder, _}}, pgc_client:execute(Connection, "select point(1,2) as t", [])),
     ?assert(is_process_alive(Connection)),
 
     {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),

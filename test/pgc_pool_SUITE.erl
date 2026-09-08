@@ -136,7 +136,7 @@ checkout_timeout_does_not_leak_connection_test(Config) ->
         end)
     end),
     receive holding -> ok end,
-    ?assertError(pool_timeout, pgc_pool:with_client(Pool, fun (_) -> ct:fail(unreachable) end, #{timeout => 100})),
+    ?assertError({pgc, pool_timeout}, pgc_pool:with_client(Pool, fun (_) -> ct:fail(unreachable) end, #{timeout => 100})),
     Holder ! release,
     % The timed-out checkout must not have been silently granted once the connection freed up --
     % it should still be available for a brand new checkout instead of stuck forever in `used`.

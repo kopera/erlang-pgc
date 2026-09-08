@@ -145,14 +145,14 @@ transaction_rollback_test(Config) ->
 
 transaction_nested_error_test(Config) ->
     {ok, Pool} = pgc:start_link(client_options(Config, #{}), #{max_size => 1}),
-    ?assertError(in_transaction, pgc:transaction(Pool, fun (_Tx) ->
+    ?assertError({pgc, in_transaction}, pgc:transaction(Pool, fun (_Tx) ->
         {commit, pgc:transaction(Pool, fun (_) -> {commit, unreachable} end)}
     end)).
 
 execute_stale_transaction_ref_test(Config) ->
     {ok, Pool} = pgc:start_link(client_options(Config, #{}), #{max_size => 1}),
     StaleRef = pgc:transaction(Pool, fun (Tx) -> {commit, Tx} end),
-    ?assertError(not_in_transaction, pgc:execute(StaleRef, "select 1")).
+    ?assertError({pgc, not_in_transaction}, pgc:execute(StaleRef, "select 1")).
 
 
 % ------------------------------------------------------------------------------

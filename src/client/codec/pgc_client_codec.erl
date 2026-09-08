@@ -53,7 +53,7 @@ encode(TypeId, Value, #codec{} = Codec) ->
     {ok, Descriptor} = pgc_client_types:lookup(TypeId, Codec#codec.types),
     case find_encoder(Descriptor, Codec) of
         {ok, Encoder} -> Encoder(Value);
-        error -> erlang:error({missing_encoder, Descriptor})
+        error -> erlang:error({pgc, {missing_encoder, Descriptor}})
     end.
 
 
@@ -67,7 +67,7 @@ decode(TypeId, Data, Codec) ->
     {ok, Descriptor} = pgc_client_types:lookup(TypeId, Codec#codec.types),
     case find_decoder(Descriptor, Codec) of
         {ok, Decoder} -> Decoder(Data);
-        error -> erlang:error({missing_decoder, Descriptor})
+        error -> erlang:error({pgc, {missing_decoder, Descriptor}})
     end.
 
 
