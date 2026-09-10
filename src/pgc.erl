@@ -13,7 +13,7 @@
     transaction/3
 ]).
 -export_type([
-    transaction/0,
+    transaction_ref/0,
     transaction_options/0
 ]).
 
@@ -46,21 +46,31 @@ stop(PoolRef) ->
 
 
 
--spec execute(PoolRef, Statement) -> {ok, Metadata, Rows} | {error, Error} when
-    PoolRef :: pgc_pool:pool_ref() | transaction(),
+-spec execute(TransactionRef | PoolRef, Statement) -> {ok, Metadata, Rows} | {error, Error} when
+    TransactionRef :: transaction_ref(),
+    PoolRef :: pgc_pool:pool_ref(),
     Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:template(),
     Parameters :: [dynamic()],
     Metadata :: pgc_client:result_metadata(),
-    Rows :: [#{binary() => dynamic()}],
+    Rows :: [dynamic()],
     Error :: pgc_client:request_error().
 execute(Client, Statement) ->
     execute(Client, Statement, #{}).
 
 
+-spec execute(TransactionRef | PoolRef, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
+    TransactionRef :: transaction_ref(),
+    PoolRef :: pgc_pool:pool_ref(),
+    Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:template(),
+    Parameters :: [dynamic()],
+    Options :: pgc_client:execute_options(),
+    Metadata :: pgc_client:result_metadata(),
+    Rows :: [dynamic()],
+    Error :: pgc_client:request_error().
 execute(TransactionRef, Statement, Options) when is_reference(TransactionRef) ->
     with_transaction(TransactionRef, fun (ClientRef) ->
-        {StatementText, Parameters} = pgc_statement:new(Statement),
-        pgc_client:execute(ClientRef, StatementText, Parameters, Options)
+        S = pgc_statement:new(Statement),
+        pgc_client:execute(ClientRef, pgc_statement:text(S), pgc_statement:parameters(S), Options)
     end);
 execute(PoolRef, Statement, Options) ->
     Deadline = pgc_deadline:from_timeout(maps:get(timeout, Options, infinity)),
@@ -68,35 +78,31 @@ execute(PoolRef, Statement, Options) ->
     CheckoutOptions = #{
         timeout => Timeout
     },
-    ExecuteOptions = #{
-        cache => maps:get(cache, Options, false),
-        row => maps:get(row, Options, map),
-        timeout => Timeout
-    },
-    {StatementText, Parameters} = pgc_statement:new(Statement),
+    ExecuteOptions = Options,
+    S = pgc_statement:new(Statement),
     pgc_pool:with_client(PoolRef, fun (ClientRef) ->
-        pgc_client:execute(ClientRef, StatementText, Parameters, ExecuteOptions)
+        pgc_client:execute(ClientRef, pgc_statement:text(S), pgc_statement:parameters(S), ExecuteOptions)
     end, CheckoutOptions).
 
 
 
 -spec transaction(PoolRef, Transaction) -> Result when
     PoolRef :: pgc_pool:pool_ref(),
-    Transaction :: fun((transaction()) -> {commit | rollback, Result}).
+    Transaction :: fun((transaction_ref()) -> {commit | rollback, Result}).
 transaction(PoolRef, Transaction) ->
     transaction(PoolRef, Transaction, #{}).
 
 
 -spec transaction(PoolRef, Transaction, Options) -> Result when
     PoolRef :: pgc_pool:pool_ref(),
-    Transaction :: fun((transaction()) -> {commit | rollback, Result}),
+    Transaction :: fun((transaction_ref()) -> {commit | rollback, Result}),
     Options :: transaction_options().
 -type transaction_options() :: #{
     isolation => serializable | repeatable_read | read_committed | read_uncommitted | default,
     access => read_write | read_only | default,
     deferrable => boolean() | default
 }.
--type transaction() :: reference().
+-type transaction_ref() :: reference().
 transaction(PoolRef, Transaction, Options) when is_function(Transaction, 1) ->
     case current_transaction() of
         undefined ->
