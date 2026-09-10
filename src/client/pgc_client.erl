@@ -145,7 +145,7 @@ exits with `exit({timeout, _})`.
 -type execute_options() :: #{
     row => map | list | tuple | proplist,
     timeout => timeout() | {abs, integer()},
-    cache => false | {true, Key :: string() | unicode:unicode_binary() | atom()},
+    cache => false | {true, Key :: unicode:chardata() | atom()},
     codec => #{modules => [module()], atom() => term()}
 }.
 -type result_metadata() :: #{
@@ -198,7 +198,7 @@ it arrives. A halted fold cancels the query on the server; see `execute/4` for `
     cache => execute_cache_options(),
     codec => #{modules => [module()], atom() => term()}
 }.
--type execute_cache_options() :: false | {true, Key :: string() | unicode:unicode_binary() | atom()}.
+-type execute_cache_options() :: false | {true, Key :: unicode:chardata() | atom()}.
 execute_fold(ClientRef, StatementText, Parameters, Fun, Acc, Options) ->
     Request = {execute, StatementText, Parameters, maps:with([cache], Options)},
     RequestOptions = maps:without([cache], Options),

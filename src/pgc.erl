@@ -14,9 +14,35 @@
 ]).
 -export_type([
     transaction_ref/0,
-    transaction_options/0
+    transaction_options/0,
+
+    execute_options/0,
+
+    request_error/0,
+    result_metadata/0
 ]).
 
+
+% ------------------------------------------------------------------------------
+% Types
+% ------------------------------------------------------------------------------
+
+-type transaction_ref() :: reference().
+-type transaction_options() :: #{
+    access => read_write | read_only | default,
+    isolation => serializable | repeatable_read | read_committed | read_uncommitted | default,
+    deferrable => boolean() | default
+}.
+
+-type execute_options() :: pgc_client:execute_options().
+
+-type request_error() :: pgc_client:request_error().
+-type result_metadata() :: pgc_client:result_metadata().
+
+
+% ------------------------------------------------------------------------------
+% API
+% ------------------------------------------------------------------------------
 
 -spec start_link(pgc_client_options:t(), pgc_pool:options()) -> {ok, pid()}.
 start_link(ClientOptions, PoolOptions) ->
@@ -61,7 +87,7 @@ execute(Client, Statement) ->
 -spec execute(TransactionRef | PoolRef, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
     TransactionRef :: transaction_ref(),
     PoolRef :: pgc_pool:pool_ref(),
-    Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:template(),
+    Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:t() | pgc_statement:template(),
     Parameters :: [dynamic()],
     Options :: pgc_client:execute_options(),
     Metadata :: pgc_client:result_metadata(),
@@ -97,12 +123,6 @@ transaction(PoolRef, Transaction) ->
     PoolRef :: pgc_pool:pool_ref(),
     Transaction :: fun((transaction_ref()) -> {commit | rollback, Result}),
     Options :: transaction_options().
--type transaction_options() :: #{
-    isolation => serializable | repeatable_read | read_committed | read_uncommitted | default,
-    access => read_write | read_only | default,
-    deferrable => boolean() | default
-}.
--type transaction_ref() :: reference().
 transaction(PoolRef, Transaction, Options) when is_function(Transaction, 1) ->
     case current_transaction() of
         undefined ->
