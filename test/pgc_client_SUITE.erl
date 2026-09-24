@@ -295,6 +295,19 @@ execute_array_round_trip_test(Config) ->
     {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
 
     {ok, _, [#{<<"a">> := [1, 2, 3]}]} = pgc_client:execute(Connection, "select $1::int4[] as a", [[1, 2, 3]]),
+    {ok, _, [#{<<"a">> := []}]} = pgc_client:execute(Connection, "select $1::int4[] as a", [[]]),
+    {ok, _, [#{<<"a">> := [[1, 2], [3, 4]], <<"d">> := 2}]} =
+        pgc_client:execute(Connection, "select $1::int4[] as a, array_ndims($1) as d", [{array, 2, [[1, 2], [3, 4]]}]),
+
+    % A list is one dimension: lists inside are elements.
+    Json = [[1, 2], [3, 4], null, #{~"a" => [5]}],
+    {ok, _, [#{<<"a">> := Json, <<"d">> := 1}]} =
+        pgc_client:execute(Connection, "select $1::jsonb[] as a, array_ndims($1) as d", [Json]),
+    {ok, _, [#{<<"a">> := [~"ab", ~"cd"]}]} = pgc_client:execute(Connection, "select $1::text[] as a", [["ab", "cd"]]),
+
+    ?assertError({pgc, {ragged_array, _}},
+        pgc_client:execute(Connection, "select $1::int4[] as a", [{array, 2, [[1, 2], [3]]}])),
+    {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
 
     ok = pgc_client:stop(Connection).
 

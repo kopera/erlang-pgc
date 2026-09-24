@@ -40,6 +40,10 @@ sending queries to the PostgreSQL server.
 
 -import_record(pgc_protocol_message, [row_description_field]).
 
+%% Postgres keeps NAMEDATALEN - 1 bytes of an identifier and silently drops the rest, prepared
+%% statement names included: two cache keys alike in their first 63 bytes name one statement.
+-define(MAX_STATEMENT_NAME_SIZE, 63).
+
 
 % -----------------------------------------------------------------------------
 % Types
@@ -133,6 +137,9 @@ list shaped per `Options`' `row` (`map` by default).
 
 `Options`' `timeout`, if given, on expiry, the query is cancelled on the server and
 exits with `exit({timeout, _})`.
+
+`Options`' `cache` key names the prepared statement: at most 63 bytes once converted to UTF-8,
+as Postgres keeps no more of a name; a longer one raises `{pgc, {statement_name_too_long, Name}}`.
 """.
 -spec execute(ClientRef, Statement, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
     ClientRef :: pgc_connection:connection_ref(),
@@ -145,7 +152,7 @@ exits with `exit({timeout, _})`.
 -type execute_options() :: #{
     row => map | list | tuple | proplist,
     timeout => timeout() | {abs, integer()},
-    cache => false | {true, Key :: unicode:chardata() | atom()},
+    cache => execute_cache_options(),
     codec => #{modules => [module()], atom() => term()}
 }.
 -type result_metadata() :: #{
@@ -248,6 +255,21 @@ mediates the wire and owns the (write side of the) type cache; the caller builds
     Error :: request_error().
 -type request_error() :: pgc_protocol_message:error_response_fields().
 request(ClientRef, Request, Options, Fun, Acc) when is_pid(ClientRef) ->
+    case Request of
+        {execute, _, _, #{cache := {true, _}} = ExecuteOptions} ->
+            StatementName = statement_name(ExecuteOptions),
+            byte_size(StatementName) =< ?MAX_STATEMENT_NAME_SIZE orelse
+                erlang:error({pgc, {statement_name_too_long, StatementName}}, [ClientRef, Request, Options, Fun, Acc], [
+                    {error_info, #{
+                        cause => #{
+                            general => "Postgres keeps only the first 63 bytes of a prepared statement's name",
+                            2 => "the cache key must be at most 63 bytes, or two keys alike in their first 63 would share one statement"
+                        }
+                    }}
+                ]);
+        _ ->
+            ok
+    end,
     Parameters = case Request of
         {query, _StatementText} -> [];
         {execute, _StatementText, StatementParameters, _ExecuteOptions} -> StatementParameters
@@ -279,7 +301,13 @@ request_statem(ClientRef, RequestId, Parameters, CodecOrCodecOptions, Deadline, 
     receive
         {parameters_required, RequestId, Types, ParametersDescription} when is_map(CodecOrCodecOptions) ->
             Codec = ensure_codec(Types, CodecOrCodecOptions),
-            EncodedParameters = encode_parameters(Parameters, ParametersDescription, Codec),
+            EncodedParameters = try encode_parameters(Parameters, ParametersDescription, Codec)
+            catch
+                Class:Reason:Stacktrace ->
+                    % The connection waits on these parameters; free it before failing.
+                    ok = pgc_connection:cast(ClientRef, {cancel, RequestId}),
+                    erlang:raise(Class, Reason, Stacktrace)
+            end,
             ok = pgc_connection:cast(ClientRef, {parameters, RequestId, EncodedParameters}),
             request_statem(ClientRef, RequestId, Parameters, Codec, Deadline, Fun, Acc);
         {row, RequestId, Types, RowDescription, RowData} ->
@@ -878,4 +906,11 @@ handle_unprepare_result_cancelled_test() ->
     ?assertEqual({done, Ref, {error, #{}}}, receive Message -> Message after 0 -> timeout end),
     erlang:demonitor(Ref, [flush]),
     Standin ! stop.
+
+-doc "Refused before anything is sent, so no connection is needed. Bytes count, not characters.".
+statement_names_longer_than_postgres_keeps_are_refused_test() ->
+    ?assertError({pgc, {statement_name_too_long, _}},
+        execute(self(), ~"select 1", [], #{cache => {true, lists:duplicate(64, $a)}})),
+    ?assertError({pgc, {statement_name_too_long, _}},
+        execute(self(), ~"select 1", [], #{cache => {true, lists:duplicate(32, $é)}})).
 -endif.
