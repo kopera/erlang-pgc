@@ -10,14 +10,17 @@
 -import_record(pgc_client_types, [descriptor]).
 
 
+%% A list is one dimension, whatever its elements hold: `jsonb[]` elements can be JSON arrays,
+%% `text[]` ones iolists. More dimensions are asked for as `{array, Dims, NestedLists}`.
 -spec encode(Values, Descriptor, Codec) -> iodata() when
-    Values :: list(),
+    Values :: list() | {array, pos_integer(), list()},
     Descriptor :: pgc_client_types:descriptor(),
     Codec :: #codec{}.
 encode(Array, #descriptor{element = ElementTypeId}, Codec) when is_list(Array) ->
-    EncodeValue = fun(Value) -> pgc_client_codec:encode(ElementTypeId, Value, Codec) end,
-    {Flags, EncodedValues} = encode_values(EncodeValue, Array),
-    [encode_header(ElementTypeId, Flags, Array) | EncodedValues].
+    encode(ElementTypeId, [length(Array)], Array, Codec);
+encode({array, Dims, Array}, #descriptor{element = ElementTypeId}, Codec)
+        when is_integer(Dims), Dims >= 1, is_list(Array) ->
+    encode(ElementTypeId, lengths(Dims, Array), Array, Codec).
 
 
 -spec decode(Data, Descriptor, Codec) -> list() when
@@ -41,8 +44,7 @@ decode(Data, DecodeValue) ->
 % Encoding
 % ------------------------------------------------------------------------------
 
-encode_header(ElementTypeId, Flags, Values) ->
-    Lengths = lengths(Values, []),
+encode_header(ElementTypeId, Flags, Lengths) ->
     Dims = length(Lengths),
     <<
         Dims:32/signed-integer,
@@ -51,17 +53,29 @@ encode_header(ElementTypeId, Flags, Values) ->
         << <<Length:32/signed-integer, 1:32/signed-integer>> || Length <- Lengths >>/binary
     >>.
 
-lengths([], []) ->
-    [0];
-lengths([], Acc) ->
-    lists:reverse(Acc);
-lengths([H | _] = Value, Acc) when is_list(H) ->
-    lengths(H, [length(Value) | Acc]);
-lengths(Value, Acc) ->
-    lists:reverse([length(Value) | Acc]).
+encode(ElementTypeId, Lengths, Array, Codec) ->
+    EncodeValue = fun(Value) -> pgc_client_codec:encode(ElementTypeId, Value, Codec) end,
+    {Flags, EncodedValues} = encode_values(EncodeValue, values(Lengths, Array)),
+    [encode_header(ElementTypeId, Flags, Lengths) | EncodedValues].
+
+%% Each dimension's length is its first list's; `values/2` checks the others.
+lengths(1, Array) ->
+    [length(Array)];
+lengths(Dims, [Nested | _] = Array) when is_list(Nested) ->
+    [length(Array) | lengths(Dims - 1, Nested)];
+lengths(Dims, Array) ->
+    [length(Array) | lists:duplicate(Dims - 1, 0)].
+
+%% Row-major, flattening only the dimensions in `Lengths`: deeper lists are elements.
+values([Length], Array) when is_list(Array), length(Array) =:= Length ->
+    Array;
+values([Length | Lengths], Array) when is_list(Array), length(Array) =:= Length ->
+    lists:append([values(Lengths, Nested) || Nested <- Array]);
+values(Lengths, _Array) ->
+    erlang:error({pgc, {ragged_array, Lengths}}).
 
 encode_values(EncodeValue, Values) ->
-    encode_values(EncodeValue, lists:flatten(Values), 0, []).
+    encode_values(EncodeValue, Values, 0, []).
 
 encode_values(_EncodeValue, [], Flags, Acc) ->
     {Flags, lists:reverse(Acc)};
@@ -101,6 +115,23 @@ unflatten([], [Elements]) ->
     Elements;
 unflatten([], []) ->
     [].
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+shape_test() ->
+    Shape = fun (Dims, Array) -> values(lengths(Dims, Array), Array) end,
+    ?assertEqual([], Shape(1, [])),
+    ?assertEqual([], Shape(2, [])),
+    ?assertEqual([1, 2, 3, 4], Shape(2, [[1, 2], [3, 4]])),
+    %% Lists below the dimensions asked for are elements.
+    ?assertEqual([[1, 2], [3, 4]], Shape(1, [[1, 2], [3, 4]])),
+    ?assertEqual([[1], [2]], Shape(2, [[[1]], [[2]]])),
+    ?assertError({pgc, {ragged_array, _}}, Shape(2, [[1, 2], [3]])),
+    ?assertError({pgc, {ragged_array, _}}, Shape(2, [[1], 2])),
+    ?assertError({pgc, {ragged_array, _}}, Shape(2, [1, 2])).
+-endif.
 
 
 -doc "Split a list into sublists of equal size.".
