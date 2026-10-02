@@ -26,6 +26,7 @@
     execute_cache_reuses_prepared_statement_test/1,
     execute_cache_reprepares_on_text_change_test/1,
     execute_array_round_trip_test/1,
+    execute_inet_round_trip_test/1,
     execute_enum_decode_option_test/1,
     execute_domain_decodes_as_base_type_test/1,
     execute_range_and_multirange_round_trip_test/1,
@@ -95,6 +96,7 @@ groups() ->
             execute_cache_reuses_prepared_statement_test,
             execute_cache_reprepares_on_text_change_test,
             execute_array_round_trip_test,
+            execute_inet_round_trip_test,
             execute_enum_decode_option_test,
             execute_domain_decodes_as_base_type_test,
             execute_range_and_multirange_round_trip_test,
@@ -308,6 +310,33 @@ execute_array_round_trip_test(Config) ->
     ?assertError({pgc, {ragged_array, _}},
         pgc_client:execute(Connection, "select $1::int4[] as a", [{array, 2, [[1, 2], [3]]}])),
     {ok, _, [#{<<"n">> := 1}]} = pgc_client:execute(Connection, "select 1 as n", []),
+
+    ok = pgc_client:stop(Connection).
+
+execute_inet_round_trip_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    Host4 = {192, 0, 2, 1},
+    Host6 = {16#2001, 16#db8, 0, 0, 0, 0, 0, 1},
+    % An inet host reads back bare, sent bare or with its full prefix length.
+    {ok, _, [#{<<"a">> := Host4, <<"b">> := Host6}]} =
+        pgc_client:execute(Connection, "select $1::inet as a, $2::inet as b", [Host4, Host6]),
+    {ok, _, [#{<<"a">> := Host4, <<"b">> := Host6}]} =
+        pgc_client:execute(Connection, "select $1::inet as a, $2::inet as b", [{Host4, 32}, {Host6, 128}]),
+    % An inet network keeps its prefix length.
+    {ok, _, [#{<<"n">> := {{192, 0, 2, 0}, 24}, <<"t">> := ~"192.0.2.0/24"}]} =
+        pgc_client:execute(Connection, "select $1::inet as n, host($1) || '/' || masklen($1) as t", [{{192, 0, 2, 0}, 24}]),
+    {ok, _, [#{<<"a">> := [Host4, {{10, 0, 0, 0}, 8}]}]} =
+        pgc_client:execute(Connection, "select $1::inet[] as a", [[Host4, {{10, 0, 0, 0}, 8}]]),
+    % A cidr value always has one, and no bits set past it.
+    {ok, _, [#{<<"a">> := {Host4, 32}, <<"b">> := {{10, 0, 0, 0}, 8}}]} =
+        pgc_client:execute(Connection, "select $1::cidr as a, $2::cidr as b", [Host4, {{10, 0, 0, 0}, 8}]),
+    ?assertError(badarg, pgc_client:execute(Connection, "select $1::cidr as a", [{{192, 0, 2, 1}, 24}])),
+
+    % What the server spells out comes back the same way.
+    {ok, _, [#{<<"a">> := Host4, <<"b">> := {{16#fe80, 0, 0, 0, 0, 0, 0, 1}, 64}, <<"c">> := {{192, 0, 2, 0}, 24}, <<"d">> := {Host4, 32}}]} =
+        pgc_client:execute(Connection,
+            "select '192.0.2.1'::inet as a, 'fe80::1/64'::inet as b, '192.0.2.0/24'::cidr as c, '192.0.2.1/32'::cidr as d", []),
 
     ok = pgc_client:stop(Connection).
 

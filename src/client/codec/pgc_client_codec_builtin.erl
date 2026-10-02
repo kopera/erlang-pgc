@@ -10,6 +10,7 @@
     float8send/1, float8recv/1,
     byteasend/1, bytearecv/1, unknownsend/1, unknownrecv/1,
     uuid_send/1, uuid_recv/1,
+    inet_send/1, inet_recv/1, cidr_send/1, cidr_recv/1,
     textsend/1, textrecv/1, varcharsend/1, varcharrecv/1, bpcharsend/1, bpcharrecv/1, citextsend/1, citextrecv/1,
     charsend/1, charrecv/1,
     date_send/1, date_recv/1,
@@ -124,6 +125,70 @@ uuid_send(<<_:128>> = Uuid) -> Uuid;
 uuid_send(Value) -> erlang:error(badarg, [Value]).
 
 uuid_recv(<<_:128>> = Uuid) -> Uuid.
+
+% ------------------------------------------------------------------------------
+% inet / cidr -- as network_send/network_recv in the server: family (2 for IPv4,
+% 3 for IPv6), prefix length, the type's cidr flag, address length, address.
+% A bare address is a host, and an inet host reads back bare, as inet_out
+% prints it; a cidr value always has its prefix length, as cidr_out prints it,
+% and no bits set past it. The flag is ignored on the way in, as the server
+% ignores it.
+% ------------------------------------------------------------------------------
+
+inet_send(Value) ->
+    network_send(Value, 0).
+
+inet_recv(<<2, 32, _IsCidr, 4, A, B, C, D>>) ->
+    {A, B, C, D};
+inet_recv(<<3, 128, _IsCidr, 16, A:16, B:16, C:16, D:16, E:16, F:16, G:16, H:16>>) ->
+    {A, B, C, D, E, F, G, H};
+inet_recv(Value) ->
+    network_recv(Value).
+
+cidr_send(Value) ->
+    network_send(Value, 1).
+
+cidr_recv(Value) ->
+    network_recv(Value).
+
+network_send({{A, B, C, D}, Bits} = Value, IsCidr)
+        when is_integer(A, 0, 255),
+             is_integer(B, 0, 255),
+             is_integer(C, 0, 255),
+             is_integer(D, 0, 255),
+             is_integer(Bits, 0, 32) ->
+    network_send_(Value, 2, Bits, IsCidr, <<A, B, C, D>>);
+network_send({{A, B, C, D, E, F, G, H}, Bits} = Value, IsCidr)
+        when is_integer(A, 0, 16#ffff),
+             is_integer(B, 0, 16#ffff),
+             is_integer(C, 0, 16#ffff),
+             is_integer(D, 0, 16#ffff),
+             is_integer(E, 0, 16#ffff),
+             is_integer(F, 0, 16#ffff),
+             is_integer(G, 0, 16#ffff),
+             is_integer(H, 0, 16#ffff),
+             is_integer(Bits, 0, 128) ->
+    network_send_(Value, 3, Bits, IsCidr, <<A:16, B:16, C:16, D:16, E:16, F:16, G:16, H:16>>);
+network_send({_, _, _, _} = Ip, IsCidr) ->
+    network_send({Ip, 32}, IsCidr);
+network_send({_, _, _, _, _, _, _, _} = Ip, IsCidr) ->
+    network_send({Ip, 128}, IsCidr);
+network_send(Value, _IsCidr) ->
+    erlang:error(badarg, [Value]).
+
+network_send_(Value, Family, Bits, 1, Address) ->
+    HostBits = bit_size(Address) - Bits,
+    case Address of
+        <<_:Bits, 0:HostBits>> -> <<Family, Bits, 1, (byte_size(Address)), Address/binary>>;
+        _ -> erlang:error(badarg, [Value])
+    end;
+network_send_(_Value, Family, Bits, 0, Address) ->
+    <<Family, Bits, 0, (byte_size(Address)), Address/binary>>.
+
+network_recv(<<2, Bits, _IsCidr, 4, A, B, C, D>>) when Bits =< 32 ->
+    {{A, B, C, D}, Bits};
+network_recv(<<3, Bits, _IsCidr, 16, A:16, B:16, C:16, D:16, E:16, F:16, G:16, H:16>>) when Bits =< 128 ->
+    {{A, B, C, D, E, F, G, H}, Bits}.
 
 % ------------------------------------------------------------------------------
 % text (+ varchar/bpchar/citext, all wire-identical pass-through)
@@ -502,3 +567,55 @@ multirange_send(Values, Descriptor, Codec) ->
 
 multirange_recv(Data, Descriptor, Codec) ->
     pgc_client_codec_multirange:decode(Data, Descriptor, Codec).
+
+
+% ------------------------------------------------------------------------------
+% Tests
+% ------------------------------------------------------------------------------
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+inet_round_trip_test_() ->
+    Host4 = {192, 0, 2, 1},
+    Host6 = {16#2001, 16#db8, 0, 0, 0, 0, 0, 1},
+    Mapped = {0, 0, 0, 0, 0, 16#ffff, 16#c000, 16#0201},
+    Net4 = {{10, 0, 0, 0}, 8},
+    Net6 = {{16#fe80, 0, 0, 0, 0, 0, 0, 0}, 64},
+    Inet = fun (Value) -> inet_recv(iolist_to_binary(inet_send(Value))) end,
+    Cidr = fun (Value) -> cidr_recv(iolist_to_binary(cidr_send(Value))) end,
+    [
+        %% An inet host reads back bare, sent bare or with its full prefix length.
+        ?_assertEqual(Host4, Inet(Host4)),
+        ?_assertEqual(Host4, Inet({Host4, 32})),
+        ?_assertEqual(Host6, Inet(Host6)),
+        ?_assertEqual(Host6, Inet({Host6, 128})),
+        ?_assertEqual(Mapped, Inet({Mapped, 128})),
+        %% An inet network keeps its prefix length.
+        ?_assertEqual(Net4, Inet(Net4)),
+        ?_assertEqual(Net6, Inet(Net6)),
+        %% A cidr value always has one.
+        ?_assertEqual(Net4, Cidr(Net4)),
+        ?_assertEqual({Host4, 32}, Cidr(Host4)),
+        ?_assertEqual({Host6, 128}, Cidr({Host6, 128})),
+        %% The wire form: family, prefix length, the type's cidr flag, address length, address.
+        ?_assertEqual(<<2, 24, 0, 4, 192, 0, 2, 0>>, iolist_to_binary(inet_send({{192, 0, 2, 0}, 24}))),
+        ?_assertEqual(<<2, 24, 1, 4, 192, 0, 2, 0>>, iolist_to_binary(cidr_send({{192, 0, 2, 0}, 24}))),
+        %% The flag is ignored on the way in.
+        ?_assertEqual(Host4, inet_recv(<<2, 32, 1, 4, 192, 0, 2, 1>>)),
+        ?_assertEqual({Host4, 32}, cidr_recv(<<2, 32, 0, 4, 192, 0, 2, 1>>)),
+        ?_assertEqual(Net4, cidr_recv(<<2, 8, 0, 4, 10, 0, 0, 0>>)),
+        %% Invalid bits, as the server calls them.
+        ?_assertError(badarg, inet_send({Host4, 33})),
+        ?_assertError(badarg, inet_send({Host6, 129})),
+        ?_assertError(badarg, inet_send({Host4, -1})),
+        ?_assertError(function_clause, inet_recv(<<2, 33, 0, 4, 192, 0, 2, 1>>)),
+        %% A cidr value has no bits set past its prefix length; an inet value may.
+        ?_assertError(badarg, cidr_send({{192, 0, 2, 1}, 24})),
+        ?_assertError(badarg, cidr_send({{16#fe80, 0, 0, 0, 0, 0, 0, 1}, 64})),
+        ?_assertEqual({{192, 0, 2, 1}, 24}, Inet({{192, 0, 2, 1}, 24})),
+        ?_assertError(badarg, inet_send({{256, 0, 0, 1}, 32})),
+        ?_assertError(badarg, cidr_send(~"192.0.2.1")),
+        ?_assertError(badarg, inet_send({192, 0, 2}))
+    ].
+-endif.
