@@ -248,9 +248,21 @@ it arrives. A halted fold cancels the query on the server; see `execute/4` for `
 execute_fold(ClientRef, StatementText, Parameters, Fun, Acc, Options) ->
     Request = {execute, StatementText, Parameters, maps:with([cache], Options)},
     RequestOptions = maps:without([cache], Options),
-    request(ClientRef, Request, RequestOptions, fun (RowDescription, Values, FoldAcc) ->
-        Fun([#{name => Name} || #row_description_field{name = Name} <- RowDescription], Values, FoldAcc)
-    end, Acc).
+    case request(ClientRef, Request, RequestOptions, fun (RowDescription, Values, {Columns0, FoldAcc}) ->
+        Columns = case Columns0 of
+            undefined -> [#{name => Name} || #row_description_field{name = Name} <- RowDescription];
+            Columns0 when is_list(Columns0) -> Columns0
+        end,
+        case Fun(Columns, Values, FoldAcc) of
+            {continue, FoldAcc1} -> {continue, {Columns, FoldAcc1}};
+            {halt, FoldAcc1} -> {halt, {Columns, FoldAcc1}}
+        end
+    end, {undefined, Acc}) of
+        {ok, Metadata, {_Columns, Acc1}} ->
+            {ok, Metadata, Acc1};
+        {error, _} = Error ->
+            Error
+    end.
 
 
 -doc """
