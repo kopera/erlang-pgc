@@ -1,20 +1,32 @@
-%% @private
 -module(pgc_auth_scram).
+-moduledoc false.
+
 -export([
     init/3,
-    continue/2
+    handle_continue/2,
+    handle_final/2
+]).
+-export_type([
+    state/0,
+    error/0
 ]).
 
--define(gs2_header, <<"n,,">>).
+-define(gs2_header, ~"n,,").
 
--record(scram, {
+
+% -----------------------------------------------------------------------------
+% Types
+% -----------------------------------------------------------------------------
+
+-record #scram{
     hashing_algorithm :: sha256,
-    username :: unicode:unicode_binary(),
-    password_fun :: fun(() -> unicode:unicode_binary()),
+    username :: unicode:chardata(),
+    password_fun :: fun(() -> unicode:chardata()),
     c_nonce :: binary(),
     c_first_message_bare :: iodata(),
     s_signature :: binary() | undefined
-}).
+}.
+-type state() :: #scram{}.
 
 -type error() ::
     invalid_encoding |
@@ -30,6 +42,17 @@
     other_error.
 
 
+% -----------------------------------------------------------------------------
+% API
+% -----------------------------------------------------------------------------
+
+
+-spec init(HashingAlgorithm, Username, Password) -> {ok, ClientFirstMessage, State} when
+    HashingAlgorithm :: sha256,
+    Username :: unicode:chardata(),
+    Password :: fun(() -> unicode:chardata()),
+    ClientFirstMessage :: iodata(),
+    State :: state().
 init(HashingAlgorithm, Username, PasswordFun) ->
     ClientNonce = crypto:strong_rand_bytes(24),
     ClientFirstMessageBare = encode_attributes([
@@ -41,10 +64,17 @@ init(HashingAlgorithm, Username, PasswordFun) ->
         username = Username,
         password_fun = PasswordFun,
         c_nonce = ClientNonce,
-        c_first_message_bare = ClientFirstMessageBare
+        c_first_message_bare = ClientFirstMessageBare,
+        s_signature = undefined
     }}.
 
-continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
+
+-spec handle_continue(ServerFirstMessage, State) -> {ok, ClientFinalMessage, State} | {error, Error} when
+    ServerFirstMessage :: iodata(),
+    ClientFinalMessage :: iodata(),
+    Error :: error(),
+    State :: state().
+handle_continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
     #scram{
         hashing_algorithm = HashingAlgorithm,
         password_fun = PasswordFun,
@@ -60,7 +90,7 @@ continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
                 {binding, ?gs2_header},
                 {nonce, ServerNonce}
             ]),
-            Password = pgc_string:to_binary(PasswordFun()),
+            Password = pgc_string:characters_to_binary(PasswordFun()),
             SaltedPassword = hi(HashingAlgorithm, Password, Salt, Iterations),
             ClientKey = crypto:mac(hmac, HashingAlgorithm, SaltedPassword, <<"Client Key">>),
             StoredKey = crypto:hash(HashingAlgorithm, ClientKey),
@@ -75,8 +105,14 @@ continue(ServerFirstMessage, #scram{s_signature = undefined} = State) ->
                 {proof, ClientProof}
             ]),
             {ok, ClientFinalMessage, State#scram{s_signature = ServerSignature}}
-    end;
-continue(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_binary(ServerSignature) ->
+    end.
+
+
+-spec handle_final(ServerFinalMessage, State) -> ok | {error, Error} when
+    ServerFinalMessage :: iodata(),
+    Error :: error(),
+    State :: state().
+handle_final(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_binary(ServerSignature) ->
     case decode_attributes(ServerFinalMessage) of
         #{error := Error} ->
             {error, Error};
@@ -89,17 +125,14 @@ continue(ServerFinalMessage, #scram{s_signature = ServerSignature}) when is_bina
             end
     end.
 
-
 % ------------------------------------------------------------------------------
 % Codecs
 % ------------------------------------------------------------------------------
 
-%% @private
 decode_attributes(String) ->
     Tokens = binary:split(String, <<",">>, [global]),
     maps:from_list([decode_attribute(Token) || Token <- Tokens]).
 
-%% @private
 decode_attribute(<<"n=", Username/binary>>) -> {username, decode_username(Username)};
 decode_attribute(<<"r=", Nonce/binary>>) -> {nonce, base64:decode(Nonce)};
 decode_attribute(<<"c=", Binding/binary>>) -> {binding, base64:decode(Binding)};
@@ -110,12 +143,10 @@ decode_attribute(<<"v=", Verifier/binary>>) -> {verifier, base64:decode(Verifier
 decode_attribute(<<"e=", Error/binary>>) -> {error, decode_error(Error)}.
 
 
-%% @private
 encode_attributes(Attributes) when is_list(Attributes) ->
     lists:join($,, [encode_attribute(Name, Value) || {Name, Value} <- Attributes]).
 
 
-%% @private
 encode_attribute(username, Username) -> [<<"n=">>, encode_username(Username)];
 encode_attribute(nonce, Nonce) -> [<<"r=">>, base64:encode(Nonce)];
 encode_attribute(binding, Binding) -> [<<"c=">>, base64:encode(Binding)];
@@ -131,7 +162,6 @@ encode_attribute(error, Error) -> [<<"e=">>, encode_error(Error)].
 %
 
 
-%% @private
 -spec decode_username(binary()) -> binary().
 decode_username(Data) ->
     case decode_username(Data, <<>>) of
@@ -139,7 +169,6 @@ decode_username(Data) ->
         {ok, Username} -> Username
     end.
 
-%% @private
 decode_username(<<"=2C", Rest/binary>>, Acc) ->
     decode_username(Rest, <<Acc/binary, $,>>);
 decode_username(<<"=3D", Rest/binary>>, Acc) ->
@@ -154,12 +183,10 @@ decode_username(<<>>, Acc) ->
     {ok, Acc}.
 
 
-%% @private
 -spec encode_username(unicode:chardata()) -> binary().
 encode_username(Username) ->
-    encode_username(pgc_string:to_binary(Username), <<>>).
+    encode_username(pgc_string:characters_to_binary(Username), <<>>).
 
-%% @private
 encode_username(<<$,, Rest/binary>>, Acc) ->
     encode_username(Rest, <<Acc/binary, "=2C">>);
 encode_username(<<$=, Rest/binary>>, Acc) ->
@@ -174,7 +201,6 @@ encode_username(<<>>, Acc) ->
 % Errors codec
 %
 
-%% @private
 -spec decode_error(binary()) -> error().
 decode_error(<<"invalid-encoding">>) -> invalid_encoding;
 decode_error(<<"extensions-not-supported">>) -> extensions_not_supported;
@@ -190,7 +216,6 @@ decode_error(<<"other-error">>) -> other_error;
 decode_error(_) -> other_error.
 
 
-%% @private
 -spec encode_error(error()) -> binary().
 encode_error(invalid_encoding)-> <<"invalid-encoding">>;
 encode_error(extensions_not_supported)-> <<"extensions-not-supported">>;
