@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      EX_DOC_VERSION: "0.40.4"
+
+    steps:
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "29.1"
+          rebar3-version: "3.27.1"
+
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: Run xref
+        run: rebar3 xref
+
+      - name: Run unit tests
+        run: rebar3 eunit
+
+      - name: Run common tests
+        run: rebar3 ct
+
+      - name: Install ex_doc
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --location --silent --show-error \
+            --remote-name "https://github.com/elixir-lang/ex_doc/releases/download/v$EX_DOC_VERSION/ex_doc_otp_29" \
+            --remote-name "https://github.com/elixir-lang/ex_doc/releases/download/v$EX_DOC_VERSION/ex-doc-otp-29.sha256sum"
+          sha256sum --check ex-doc-otp-29.sha256sum
+          chmod +x ex_doc_otp_29
+
+      - name: Build the documentation
+        run: |
+          "$RUNNER_TEMP/ex_doc_otp_29" pgc dev _build/default/lib/pgc/ebin \
+            --config docs.config --output doc --warnings-as-errors
