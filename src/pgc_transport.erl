@@ -71,7 +71,7 @@
 connect(Address, Options, Timeout) ->
     Deadline = pgc_deadline:from_timeout(Timeout),
     TLS = maps:get(tls, Options, prefer),
-    TLSOptions = maps:get(tls_options, Options, []),
+    TLSOptions = maps:get(tls_options, Options, [{verify, verify_none}]),
     case tcp_connect(Address, Deadline) of
         {ok, Socket} when TLS =:= disable ->
             {ok, #tcp_transport{socket = Socket, options = Options}};
