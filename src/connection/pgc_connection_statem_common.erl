@@ -10,6 +10,8 @@
 -import_record(pgc_connection_statem, [data, send, callback, query, prepare, unprepare, execute, cancel]).
 -import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response, error_response]).
 
+-define(CANCEL_REQUEST_INTERVAL, 100).
+
 % -----------------------------------------------------------------------------
 % API
 % -----------------------------------------------------------------------------
@@ -43,9 +45,16 @@ handle_event(internal, #cancel{}, _State, #data{backend_key = undefined}) ->
     logger:warning("pgc_connection: cancel request failed: not supported"),
     keep_state_and_data;
 
-handle_event(internal, #cancel{}, _State, #data{transport = Transport, backend_key = {Id, Secret}}) ->
+handle_event(internal, #cancel{ref = Ref}, _State, #data{transport = Transport, backend_key = {Id, Secret}}) ->
     _ = spawn(fun () -> send_cancel_request(Transport, Id, Secret) end),
-    keep_state_and_data;
+    {keep_state_and_data, [
+        {{timeout, cancel}, ?CANCEL_REQUEST_INTERVAL, Ref}
+    ]};
+
+handle_event({timeout, cancel}, Ref, _State, _ConnectionData) ->
+    {keep_state_and_data, [
+        {next_event, internal, #cancel{ref = Ref}}
+    ]};
 
 handle_event(internal, #send{}, _State, #data{transport = undefined}) ->
     keep_state_and_data;
