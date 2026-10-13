@@ -162,7 +162,7 @@ with_parameters(_UriMap, Query, Options) when is_map(Query) ->
                 ~"0" ->
                     {ok, Acc#{ping_interval => infinity}};
                 Other ->
-                    {error, {invalid_parameter, ~"keepalives_idle", Other}}
+                    {error, {invalid_parameter, ~"keepalives", Other}}
             end;
         (~"keepalives_idle", Value, {ok, Acc}) ->
             case parse_timeout(Value) of
@@ -201,8 +201,13 @@ authority host of its own to begin with.
     Query :: query().
 address(UriMap, Query) ->
     case host(UriMap, Query) of
-        {ok, <<"/", _/binary>> = Path} ->
-            {ok, #{path => pgc_string:characters_to_binary(uri_string:unquote(Path))}};
+        {ok, <<"/", _/binary>> = Directory} ->
+            case port(UriMap, Query) of
+                {ok, Port} ->
+                    {ok, #{path => <<(pgc_string:characters_to_binary(uri_string:unquote(Directory)))/binary, "/.s.PGSQL.", (integer_to_binary(Port))/binary>>}};
+                {error, _} = Error ->
+                    Error
+            end;
         {ok, Host} ->
             case port(UriMap, Query) of
                 {ok, Port} when Host =/= ~"" ->
@@ -355,17 +360,25 @@ postgres_scheme_test() ->
 
 unix_socket_host_test() ->
     ?assertEqual({ok, #{
-        address => #{path => ~"/var/run/postgresql"},
+        address => #{path => ~"/var/run/postgresql/.s.PGSQL.5432"},
         user => ~"postgres",
         database => ~"mydb"
     }}, pgc_client_options:from_uri(~"postgresql://postgres@%2Fvar%2Frun%2Fpostgresql/mydb")).
 
 unix_socket_host_query_param_test() ->
     ?assertEqual({ok, #{
-        address => #{path => ~"/var/run/postgresql"},
+        address => #{path => ~"/var/run/postgresql/.s.PGSQL.5432"},
         user => ~"postgres",
         database => ~"mydb"
     }}, pgc_client_options:from_uri(~"postgresql://postgres@/mydb?host=/var/run/postgresql")).
+
+invalid_keepalives_test() ->
+    ?assertEqual({error, {invalid_parameter, ~"keepalives", ~"2"}},
+        pgc_client_options:from_uri(~"postgresql://user@localhost/mydb?keepalives=2")).
+
+unix_socket_port_test() ->
+    ?assertMatch({ok, #{address := #{path := ~"/tmp/.s.PGSQL.5433"}}},
+        pgc_client_options:from_uri(~"postgresql://postgres@/mydb?host=/tmp&port=5433")).
 
 ipv6_host_test() ->
     ?assertMatch({ok, #{address := #{host := "::1", port := 5432}}},
