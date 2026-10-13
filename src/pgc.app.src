@@ -1,6 +1,6 @@
 {application, pgc, [
     {description, "PostgreSQL client library"},
-    {vsn, git},
+    {vsn, "0.2.0"},
     {registered, []},
     {applications, [
         kernel,
