@@ -8,11 +8,20 @@ Builds `t:t/0` maps, suitable for `pgc_client:start_link/1,2` (and, through it,
     from_uri/1
 ]).
 -export_type([
-    t/0
+    t/0,
+    address/0,
+    from_uri_error/0
 ]).
 
+-type address() :: #{
+    host := inet:hostname() | inet:ip_address(),
+    port := socket:port_number()
+} | #{
+    path := binary() | string()
+}.
+
 -type t() :: #{
-    address := pgc_transport:address(),
+    address := address(),
     tls => disable | prefer | require,
     tls_options => [ssl:tls_client_option()],
     connect_timeout => timeout(),
@@ -187,7 +196,7 @@ own `postgresql://%2Fvar%2Frun%2Fpostgresql/mydb` / `postgresql:///mydb?host=/va
 conventions -- the latter's `host` query parameter is only consulted when the URI has no
 authority host of its own to begin with.
 """.
--spec address(UriMap, Query) -> {ok, pgc_transport:address()} | {error, from_uri_error()} when
+-spec address(UriMap, Query) -> {ok, address()} | {error, from_uri_error()} when
     UriMap :: uri_string:uri_map(),
     Query :: query().
 address(UriMap, Query) ->

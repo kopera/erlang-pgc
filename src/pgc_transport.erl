@@ -16,7 +16,6 @@
 ]).
 -export_type([
     t/0,
-    address/0,
     connect_options/0,
     error/0
 ]).
@@ -56,15 +55,8 @@
 }.
 -opaque t() :: #tcp_transport{} | #tls_transport{}.
 
--type address() :: #{
-    host := inet:hostname() | inet:ip_address(),
-    port := socket:port_number()
-} | #{
-    path := binary() | string()
-}.
 
-
--spec connect(address(), connect_options(), timeout()) -> {ok, t()} | {error, error()}.
+-spec connect(pgc_client_options:address(), connect_options(), timeout()) -> {ok, t()} | {error, error()}.
 -type connect_options() :: #{
     tls => disable | prefer | require,
     tls_options => [ssl:tls_client_option()]
@@ -104,7 +96,7 @@ connect(Address, Options, Timeout) ->
             {error, Error}
     end.
 
--spec tcp_connect(address(), pgc_deadline:t()) -> {ok, gen_tcp:socket()} | {error, #error{}}.
+-spec tcp_connect(pgc_client_options:address(), pgc_deadline:t()) -> {ok, gen_tcp:socket()} | {error, #error{}}.
 tcp_connect(Address, Deadline) ->
     Options = [
         {inet_backend, socket},
@@ -130,7 +122,7 @@ tcp_connect(Address, Deadline) ->
     end.
 
 
--spec tls_options(address(), [ssl:tls_client_option()]) -> [ssl:tls_client_option()].
+-spec tls_options(pgc_client_options:address(), [ssl:tls_client_option()]) -> [ssl:tls_client_option()].
 tls_options(#{host := Host}, TLSOptions) when is_list(Host) ->
     case inet:parse_address(Host) of
         {error, einval} -> [{server_name_indication, string:trim(Host, trailing, ".")} | TLSOptions];
