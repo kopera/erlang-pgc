@@ -31,6 +31,8 @@
     execute_domain_decodes_as_base_type_test/1,
     execute_range_and_multirange_round_trip_test/1,
     execute_json_round_trip_test/1,
+    execute_numeric_round_trip_test/1,
+    execute_anonymous_record_round_trip_test/1,
     execute_codecs_module_override_test/1,
     execute_missing_codec_crashes_connection_test/1,
     reset_test/1,
@@ -100,6 +102,8 @@ groups() ->
             execute_domain_decodes_as_base_type_test,
             execute_range_and_multirange_round_trip_test,
             execute_json_round_trip_test,
+            execute_numeric_round_trip_test,
+            execute_anonymous_record_round_trip_test,
             execute_codecs_module_override_test,
             execute_missing_codec_crashes_connection_test,
             reset_test,
@@ -377,6 +381,35 @@ execute_json_round_trip_test(Config) ->
 
     {ok, _, [#{<<"j">> := #{<<"a">> := 1}}]} = pgc_client:execute(Connection, "select $1::json as j", [#{a => 1}]),
     {ok, _, [#{<<"j">> := #{<<"a">> := 1}}]} = pgc_client:execute(Connection, "select $1::jsonb as j", [#{a => 1}]),
+
+    ok = pgc_client:stop(Connection).
+
+execute_numeric_round_trip_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, [#{<<"n">> := <<"1.50">>}]} = pgc_client:execute(Connection, "select 1.50::numeric as n", []),
+    {ok, _, [#{<<"n">> := <<"-123456789012345678901234567890.000000001">>}]} =
+        pgc_client:execute(Connection, "select '-123456789012345678901234567890.000000001'::numeric as n", []),
+    {ok, _, [#{<<"n">> := 'NaN', <<"i">> := infinity}]} =
+        pgc_client:execute(Connection, "select 'NaN'::numeric as n, 'Infinity'::numeric as i", []),
+    [{ok, _, [#{<<"t">> := Text}]} = pgc_client:execute(Connection, "select $1::numeric::text as t", [Value]) || {Value, Text} <- [
+        {42, <<"42">>},
+        {-0.25, <<"-0.25">>},
+        {<<"1.50">>, <<"1.50">>},
+        {"0.0001", <<"0.0001">>},
+        {<<"1.5e3">>, <<"1500">>},
+        {'-infinity', <<"-Infinity">>}
+    ]],
+    {ok, _, [#{<<"n">> := 1.5}]} =
+        pgc_client:execute(Connection, "select 1.50::numeric as n", [], #{codec => #{numeric => #{representation => float}}}),
+    ?assertError(badarg, pgc_client:execute(Connection, "select $1::numeric as n", [<<"1.2.3">>])),
+
+    ok = pgc_client:stop(Connection).
+
+execute_anonymous_record_round_trip_test(Config) ->
+    {ok, Connection} = pgc_client:start_link(connection_options(Config, #{})),
+
+    {ok, _, [#{<<"r">> := #{1 := 1, 2 := <<"a">>}}]} = pgc_client:execute(Connection, "select row(1, 'a') as r", []),
 
     ok = pgc_client:stop(Connection).
 
