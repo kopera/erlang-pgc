@@ -10,7 +10,14 @@
 ]).
 
 -export([
-    tls_without_options_does_not_verify_test/1
+    sends_server_name_test/1,
+    sends_server_name_without_trailing_dot_test/1,
+    atom_host_sends_server_name_test/1,
+    ip_address_sends_no_server_name_test/1,
+    keeps_given_server_name_test/1,
+    dup_sends_server_name_test/1,
+    tls_without_options_does_not_verify_test/1,
+    verify_full_checks_hostname_test/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -37,7 +44,14 @@ end_per_suite(_Config) ->
 -doc false.
 all() ->
     [
-        tls_without_options_does_not_verify_test
+        sends_server_name_test,
+        sends_server_name_without_trailing_dot_test,
+        atom_host_sends_server_name_test,
+        ip_address_sends_no_server_name_test,
+        keeps_given_server_name_test,
+        dup_sends_server_name_test,
+        tls_without_options_does_not_verify_test,
+        verify_full_checks_hostname_test
     ].
 
 
@@ -45,16 +59,73 @@ all() ->
 % Test cases
 % ------------------------------------------------------------------------------
 
+sends_server_name_test(_Config) ->
+    {Port, _CACerts} = start_server("localhost", 1),
+    {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port}, #{tls => require}, 5000),
+    ?assertEqual({ok, "localhost"}, receive_server_name()),
+    pgc_transport:close(Transport).
+
+sends_server_name_without_trailing_dot_test(_Config) ->
+    {Port, _CACerts} = start_server("localhost", 1),
+    {ok, Transport} = pgc_transport:connect(#{host => "localhost.", port => Port}, #{tls => require}, 5000),
+    ?assertEqual({ok, "localhost"}, receive_server_name()),
+    pgc_transport:close(Transport).
+
+atom_host_sends_server_name_test(_Config) ->
+    {Port, _CACerts} = start_server("localhost", 1),
+    {ok, Transport} = pgc_transport:connect(#{host => localhost, port => Port}, #{tls => require}, 5000),
+    ?assertEqual({ok, "localhost"}, receive_server_name()),
+    pgc_transport:close(Transport).
+
+ip_address_sends_no_server_name_test(_Config) ->
+    {Port, _CACerts} = start_server("localhost", 1),
+    {ok, Transport} = pgc_transport:connect(#{host => "127.0.0.1", port => Port}, #{tls => require}, 5000),
+    ?assertEqual({ok, undefined}, receive_server_name()),
+    pgc_transport:close(Transport).
+
+keeps_given_server_name_test(_Config) ->
+    {Port, _CACerts} = start_server("localhost", 1),
+    {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port}, #{
+        tls => require,
+        tls_options => [{verify, verify_none}, {server_name_indication, "db.pgc.test"}]
+    }, 5000),
+    ?assertEqual({ok, "db.pgc.test"}, receive_server_name()),
+    pgc_transport:close(Transport).
+
+dup_sends_server_name_test(_Config) ->
+    {Port, _CACerts} = start_server("localhost", 2),
+    {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port}, #{tls => require}, 5000),
+    ?assertEqual({ok, "localhost"}, receive_server_name()),
+    {ok, Dup} = pgc_transport:dup(Transport, 5000),
+    ?assertEqual({ok, "localhost"}, receive_server_name()),
+    pgc_transport:close(Dup),
+    pgc_transport:close(Transport).
+
 tls_without_options_does_not_verify_test(_Config) ->
     {Port, _CACerts} = start_server("other.pgc.test", 1),
     {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port}, #{}, 5000),
     ?assertMatch({ok, _}, receive_server_name()),
     pgc_transport:close(Transport).
 
+verify_full_checks_hostname_test(_Config) ->
+    {Port, CACerts} = start_server("other.pgc.test", 1),
+    ?assertMatch(
+        {error, #pgc_transport:error{reason = {tls_failed, {tls_alert, {bad_certificate, _}}}}},
+        pgc_transport:connect(#{host => "localhost", port => Port}, sslmode_options("verify-full", CACerts), 5000)
+    ),
+    {Port2, CACerts2} = start_server("localhost", 1),
+    {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port2}, sslmode_options("verify-full", CACerts2), 5000),
+    pgc_transport:close(Transport).
+
 
 % ------------------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------------------
+
+sslmode_options(SSLMode, CACerts) ->
+    {ok, #{tls := TLS, tls_options := TLSOptions}} =
+        pgc_client_options:from_uri("postgresql://user@localhost/db?sslmode=" ++ SSLMode),
+    #{tls => TLS, tls_options => lists:keystore(cacerts, 1, TLSOptions, {cacerts, CACerts})}.
 
 start_server(DNSName, Connections) ->
     #{server_config := ServerConfig, client_config := ClientConfig} = public_key:pkix_test_data(#{

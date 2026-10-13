@@ -71,7 +71,7 @@
 connect(Address, Options, Timeout) ->
     Deadline = pgc_deadline:from_timeout(Timeout),
     TLS = maps:get(tls, Options, prefer),
-    TLSOptions = maps:get(tls_options, Options, [{verify, verify_none}]),
+    TLSOptions = tls_options(Address, maps:get(tls_options, Options, [{verify, verify_none}])),
     case tcp_connect(Address, Deadline) of
         {ok, Socket} when TLS =:= disable ->
             {ok, #tcp_transport{socket = Socket, options = Options}};
@@ -81,7 +81,7 @@ connect(Address, Options, Timeout) ->
                 {ok, <<$S>>} ->
                     case tls_connect(Socket, TLSOptions, Deadline) of
                         {ok, TLSSocket} ->
-                            {ok, #tls_transport{socket = TLSSocket, options = Options}};
+                            {ok, #tls_transport{socket = TLSSocket, options = Options#{tls_options => TLSOptions}}};
                         % {error, _Error} when TLS =:= prefer ->
                         %     connect(Address, Options#{tls := disable}, pgc_deadline:to_timeout(Deadline));
                         % elp:ignore W0027
@@ -127,6 +127,18 @@ tcp_connect(Address, Deadline) ->
         {error, Reason}->
             {error, #error{reason = tcp_socket_error(Reason)}}
     end.
+
+
+-spec tls_options(address(), [ssl:tls_client_option()]) -> [ssl:tls_client_option()].
+tls_options(#{host := Host}, TLSOptions) when is_list(Host) ->
+    case inet:parse_address(Host) of
+        {error, einval} -> [{server_name_indication, string:trim(Host, trailing, ".")} | TLSOptions];
+        {ok, _Address} -> TLSOptions
+    end;
+tls_options(#{host := Host} = Address, TLSOptions) when is_atom(Host) ->
+    tls_options(Address#{host := atom_to_list(Host)}, TLSOptions);
+tls_options(#{}, TLSOptions) ->
+    TLSOptions.
 
 
 -spec tls_connect(gen_tcp:socket(), [ssl:tls_client_option()], pgc_deadline:t()) -> {ok, ssl:sslsocket()} | {error, #error{}}.
