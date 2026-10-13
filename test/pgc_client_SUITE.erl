@@ -42,20 +42,21 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--define(POSTGRES_IMAGE, "postgres:18-alpine").
--define(POSTGRES_USER, "postgres").
--define(POSTGRES_PASSWORD, "postgres").
--define(POSTGRES_DATABASE, "postgres").
-
 
 -doc false.
 suite() ->
-    [{timetrap, {seconds, 60}}].
+    [
+        {timetrap, {seconds, 60}},
+        {require, postgresql_server_host},
+        {require, postgresql_server_port},
+        {require, postgresql_server_user},
+        {require, postgresql_server_password},
+        {require, postgresql_server_database}
+    ].
 
 -doc false.
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(pgc),
-    {ok, _} = application:ensure_all_started(erlexec),
     {ok, Modules} = application:get_key(pgc, modules),
     lists:foreach(fun code:ensure_loaded/1, Modules),
     Config.
@@ -67,13 +68,11 @@ end_per_suite(_Config) ->
 
 -doc false.
 init_per_testcase(_Case, Config) ->
-    {Name, Pid, Port} = start_postgres(),
-    [{postgres_name, Name}, {postgres_pid, Pid}, {postgres_port, Port} | Config].
+    [{database, create_database()} | Config].
 
 -doc false.
 end_per_testcase(_Case, Config) ->
-    stop_postgres(?config(postgres_pid, Config)),
-    ok.
+    drop_database(?config(database, Config)).
 
 -doc false.
 all() ->
@@ -484,79 +483,25 @@ transaction_exception_rolls_back_test(Config) ->
 
 connection_options(Config, Overrides) ->
     maps:merge(#{
-        address => #{host => "127.0.0.1", port => ?config(postgres_port, Config)},
+        address => #{host => ct:get_config(postgresql_server_host), port => ct:get_config(postgresql_server_port)},
         tls => disable,
-        user => ?POSTGRES_USER,
-        password => ?POSTGRES_PASSWORD,
-        database => ?POSTGRES_DATABASE,
+        user => ct:get_config(postgresql_server_user),
+        password => ct:get_config(postgresql_server_password),
+        database => ?config(database, Config),
         ping_interval => infinity
     }, Overrides).
 
-start_postgres() ->
-    % `exec:run/2`'s list-command form execs directly (no shell), so it doesn't
-    % search $PATH like `os:cmd/1`'s shell-routed calls below do -- resolve it
-    % ourselves.
-    Docker = case os:find_executable("docker") of
-        false -> ct:fail(docker_not_found);
-        Path -> Path
-    end,
-    Name = "pgc-test-" ++ binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(16), lowercase)),
-    Cmd = [
-        Docker,
-        "run", "--rm",
-        "--name", Name,
-        "-e", "POSTGRES_USER=" ++ ?POSTGRES_USER,
-        "-e", "POSTGRES_PASSWORD=" ++ ?POSTGRES_PASSWORD,
-        "-e", "POSTGRES_DB=" ++ ?POSTGRES_DATABASE,
-        "-p", "127.0.0.1::5432",
-        ?POSTGRES_IMAGE
-    ],
-    % `exec:run_link/2` supervises this as a proper (foreground) OS child of
-    % the `exec-port` program, not a detached background process, and links it to this
-    % (the test case's own) process bidirectionally -- an unexpected container exit
-    % fails this one test case, and this process exiting/crashing takes the container
-    % down too.
-    {ok, Pid, OsPid} = exec:run_link(Cmd, [stdout, stderr, monitor, {kill_timeout, 5}]),
-    ok = wait_for_postgres_ready(OsPid),
-    Port = postgres_port(Name),
-    {Name, Pid, Port}.
+create_database() ->
+    Database = <<"pgc_test_", (binary:encode_hex(crypto:strong_rand_bytes(16), lowercase))/binary>>,
+    {ok, _, []} = execute_on_server([~"create database ", {identifier, #{value => Database}}]),
+    Database.
 
--doc """
-PostgreSQL's docker entrypoint logs "database system is ready to accept
-connections" once for a temporary bootstrap instance (used to run init scripts,
-reachable only over a local Unix socket, never the network) and again for the real
-server -- waiting for it exactly twice, rather than polling `pg_isready` (which the
-bootstrap instance also answers), avoids racing a connection attempt against that
-first, throwaway one.
-""".
-wait_for_postgres_ready(OsPid) ->
-    Deadline = pgc_deadline:from_timeout(60000),
-    wait_for_postgres_ready(OsPid, <<>>, Deadline).
-
-wait_for_postgres_ready(OsPid, Buffer, Deadline) ->
-    case pgc_deadline:to_timeout(Deadline) of
-        0 ->
-            ct:fail(postgres_not_ready);
-        Remaining ->
-            receive
-                {Stream, OsPid, Data} when Stream =:= stdout; Stream =:= stderr ->
-                    NewBuffer = <<Buffer/binary, Data/binary>>,
-                    Matches = binary:matches(NewBuffer, <<"database system is ready to accept connections">>),
-                    case length(Matches) of
-                        Count when Count >= 2 -> ok;
-                        _ -> wait_for_postgres_ready(OsPid, NewBuffer, Deadline)
-                    end
-            after Remaining ->
-                ct:fail(postgres_not_ready)
-            end
-    end.
-
-postgres_port(Name) ->
-    Output = string:trim(os:cmd("docker port " ++ Name ++ " 5432/tcp")),
-    [Line | _] = string:split(Output, "\n"),
-    [_Host, PortString] = string:split(Line, ":", trailing),
-    erlang:list_to_integer(string:trim(PortString)).
-
-stop_postgres(Pid) ->
-    _ = exec:stop_and_wait(Pid, 10000),
+drop_database(Database) ->
+    {ok, _, []} = execute_on_server([~"drop database ", {identifier, #{value => Database}}, ~" with (force)"]),
     ok.
+
+execute_on_server(Template) ->
+    {ok, Client} = pgc_client:start_link(connection_options([], #{database => ct:get_config(postgresql_server_database)})),
+    Result = pgc_client:execute(Client, pgc_statement:text(pgc_statement:new(Template)), []),
+    ok = pgc_client:stop(Client),
+    Result.
