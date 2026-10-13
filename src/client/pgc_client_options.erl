@@ -291,14 +291,6 @@ parse_sslmode(Value) ->
             {ok, #{tls => prefer, tls_options => [{verify, verify_none}]}};
         ~"require" ->
             {ok, #{tls => require, tls_options => [{verify, verify_none}]}};
-        ~"verify-ca" ->
-            {ok, #{
-                tls => require,
-                tls_options => [
-                    {verify, verify_peer},
-                    {cacerts, public_key:cacerts_get()}
-                ]
-            }};
         ~"verify-full" ->
             {ok, #{
                 tls => require,
@@ -378,6 +370,10 @@ invalid_scheme_test() ->
 invalid_sslmode_test() ->
     ?assertEqual({error, {invalid_parameter, ~"sslmode" , ~"verify-nope"}},
         pgc_client_options:from_uri(~"postgresql://user@localhost/mydb?sslmode=verify-nope")).
+
+unsupported_sslmode_test() ->
+    ?assertEqual({error, {invalid_parameter, ~"sslmode" , ~"verify-ca"}},
+        pgc_client_options:from_uri(~"postgresql://user@localhost/mydb?sslmode=verify-ca")).
 
 unsupported_parameter_test() ->
     ?assertEqual({error, {unsupported_parameter, ~"sslrootcert"}},
