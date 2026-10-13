@@ -1,4 +1,27 @@
 -module(pgc_statement).
+-moduledoc """
+Statements for `pgc:execute/2,3`: a text, a text with its parameters, or a template.
+
+```erlang
+pgc_statement:new(~"select 1"),
+pgc_statement:new({~"select $1::int4", [42]}).
+```
+
+A template is a list of text and tokens. A `{parameter, Info}` token becomes a placeholder bound to
+its `value`. Parameters with the same `key` share a placeholder, and `type` adds a cast. An
+`{identifier, Info}` token becomes a quoted identifier.
+
+```erlang
+Statement = pgc_statement:new([
+    ~"select * from ", {identifier, #{value => ~"user"}},
+    ~" where id = ", {parameter, #{key => id, value => 42, type => int8}},
+    ~" or parent_id = ", {parameter, #{key => id, value => 42}}
+]),
+~"select * from \"user\" where id = ($1::int8) or parent_id = $1" =
+    iolist_to_binary(pgc_statement:text(Statement)),
+[42] = pgc_statement:parameters(Statement).
+```
+""".
 -export([
     new/1
 ]).

@@ -1,7 +1,38 @@
 -module(pgc_client).
 -moduledoc """
-A client implementation based on the `m:pgc_connection` behaviour suitable for
-sending queries to the PostgreSQL server.
+A client for sending queries to the PostgreSQL server over one connection.
+
+```erlang
+{ok, Options} = pgc_client_options:from_uri(~"postgresql://postgres:postgres@localhost/postgres"),
+{ok, Client} = pgc_client:start_link(Options),
+{ok, #{command := ~"select", rows := 1}, [#{~"answer" := 42}]} =
+    pgc_client:execute(Client, ~"select $1::int4 as answer", [42]).
+```
+
+Rows are maps by default. The `row` option selects another shape:
+
+```erlang
+{ok, _, [{42, ~"pgc"}]} =
+    pgc_client:execute(Client, ~"select 42 as answer, 'pgc' as name", [], #{row => tuple}).
+```
+
+`execute_fold/6` folds over the rows as they arrive, without collecting them:
+
+```erlang
+{ok, #{rows := 10}, 55} = pgc_client:execute_fold(Client, ~"select generate_series(1, 10)", [],
+    fun (_Columns, [N], Sum) -> {continue, Sum + N} end, 0, #{}).
+```
+
+`transaction/3` runs a fun in a transaction, committed or rolled back as the fun returns:
+
+```erlang
+42 = pgc_client:transaction(Client, fun () ->
+    {ok, _, [#{~"answer" := Answer}]} = pgc_client:execute(Client, ~"select 42 as answer", []),
+    {commit, Answer}
+end, #{}).
+```
+
+`stop/1` closes the connection.
 """.
 
 -export([
@@ -106,8 +137,7 @@ start_link(Options) ->
 Start a new postgresql client connection registered using
 the provided `ClientName`.
 
-`ClientName` specifies the `t:pgc_connection:connection_name/0` to
-register for the `m:pgc_connection` process.
+`ClientName` specifies the `t:client_name/0` to register for the client process.
 """.
 -spec start_link(client_name(), pgc_client_options:t()) -> gen_statem:start_ret().
 start_link(ClientName, Options) ->

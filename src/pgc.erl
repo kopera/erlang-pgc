@@ -1,4 +1,34 @@
 -module(pgc).
+-moduledoc """
+A PostgreSQL client with a pool of connections.
+
+Start a pool from client options and run statements on it:
+
+```erlang
+{ok, ClientOptions} = pgc_client_options:from_uri(~"postgresql://postgres:postgres@localhost/postgres"),
+{ok, Pool} = pgc:start_link(ClientOptions, #{max_size => 10}),
+{ok, #{command := ~"select", rows := 1}, [#{~"answer" := 42}]} =
+    pgc:execute(Pool, {~"select $1::int4 as answer", [42]}).
+```
+
+A transaction holds one connection. Its statements run on the transaction reference, and the fun
+returns `{commit, Result}` or `{rollback, Result}`:
+
+```erlang
+Name = pgc:transaction(Pool, fun (Transaction) ->
+    {ok, _, [#{~"name" := Name}]} = pgc:execute(Transaction, {~"select $1::text as name", [~"pgc"]}),
+    {commit, Name}
+end).
+```
+
+Under a supervisor, start the pool with a child specification:
+
+```erlang
+pgc:child_spec(my_pool, {local, my_pool}, ClientOptions, #{max_size => 10}).
+```
+
+Statements can also be templates, see `m:pgc_statement`. For a single connection, see `m:pgc_client`.
+""".
 -export([
     start_link/2,
     start_link/3,
