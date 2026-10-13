@@ -167,10 +167,11 @@ as Postgres keeps no more of a name; a longer one raises `{pgc, {statement_name_
 }.
 execute(ClientRef, StatementText, Parameters, Options) ->
     RowFormat = maps:get(row, Options, map),
-    RemainingOptions = maps:without([row], Options),
-    case execute_fold(ClientRef, StatementText, Parameters, fun (RowDescription, Values, Acc) ->
+    Request = {execute, StatementText, Parameters, maps:with([cache], Options)},
+    RequestOptions = maps:without([row, cache], Options),
+    case request(ClientRef, Request, RequestOptions, fun (RowDescription, Values, Acc) ->
         {continue, [format_row(RowFormat, RowDescription, Values) | Acc]}
-    end, [], RemainingOptions) of
+    end, []) of
         {ok, Metadata, Rows} ->
             {ok, Metadata, lists:reverse(Rows)};
         {error, _} = Error -> Error
@@ -196,6 +197,8 @@ format_row(proplist, Fields, Values) ->
 Runs a parameterized statement through parse/bind/execute, folding `Fun` over each row as
 it arrives. A halted fold cancels the query on the server; see `execute/4` for `Options`'
 `timeout` semantics.
+
+`Fun` receives the result's columns, the row's values in column order and the accumulator.
 """.
 -spec execute_fold(ClientRef, Statement, Parameters, Fun, Acc, Options) -> {ok, Metadata, Acc} | {error, Error} when
     ClientRef :: client_ref(),
@@ -205,7 +208,7 @@ it arrives. A halted fold cancels the query on the server; see `execute/4` for `
     Options :: execute_fold_options(),
     Metadata :: result_metadata(),
     Error :: request_error().
--type execute_fold_fun(Acc) :: fun((pgc_connection:row_description(), [term() | null], Acc) -> {continue, Acc} | {halt, Acc}).
+-type execute_fold_fun(Acc) :: fun(([#{name := unicode:unicode_binary()}], [term() | null], Acc) -> {continue, Acc} | {halt, Acc}).
 -type execute_fold_options() :: #{
     timeout => timeout() | {abs, integer()},
     cache => execute_cache_options(),
@@ -215,7 +218,9 @@ it arrives. A halted fold cancels the query on the server; see `execute/4` for `
 execute_fold(ClientRef, StatementText, Parameters, Fun, Acc, Options) ->
     Request = {execute, StatementText, Parameters, maps:with([cache], Options)},
     RequestOptions = maps:without([cache], Options),
-    request(ClientRef, Request, RequestOptions, Fun, Acc).
+    request(ClientRef, Request, RequestOptions, fun (RowDescription, Values, FoldAcc) ->
+        Fun([#{name => Name} || #row_description_field{name = Name} <- RowDescription], Values, FoldAcc)
+    end, Acc).
 
 
 -doc """
