@@ -58,7 +58,7 @@ decode_fields(DecodeField, <<TypeId:32/integer, Size:32/signed-integer, FieldDat
     [{TypeId, Value} | decode_fields(DecodeField, Rest)].
 
 
-to_term(undefined, Fields) ->
+to_term(FieldsDescription, Fields) when FieldsDescription =:= undefined; FieldsDescription =:= [] ->
     % Anonymous record -- no field names to key by, so number them instead.
     lists:foldl(fun ({_Oid, Value}, Acc) ->
         Key = map_size(Acc) + 1,
