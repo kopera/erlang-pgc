@@ -162,7 +162,7 @@ with_parameters(_UriMap, Query, Options) when is_map(Query) ->
                 ~"0" ->
                     {ok, Acc#{ping_interval => infinity}};
                 Other ->
-                    {error, {invalid_parameter, ~"keepalives_idle", Other}}
+                    {error, {invalid_parameter, ~"keepalives", Other}}
             end;
         (~"keepalives_idle", Value, {ok, Acc}) ->
             case parse_timeout(Value) of
@@ -371,6 +371,10 @@ unix_socket_host_query_param_test() ->
         user => ~"postgres",
         database => ~"mydb"
     }}, pgc_client_options:from_uri(~"postgresql://postgres@/mydb?host=/var/run/postgresql")).
+
+invalid_keepalives_test() ->
+    ?assertEqual({error, {invalid_parameter, ~"keepalives", ~"2"}},
+        pgc_client_options:from_uri(~"postgresql://user@localhost/mydb?keepalives=2")).
 
 unix_socket_port_test() ->
     ?assertMatch({ok, #{address := #{path := ~"/tmp/.s.PGSQL.5433"}}},
