@@ -299,15 +299,6 @@ handle_event(enter, _OldState, #s_pinging{}, ConnectionData) ->
 handle_event(internal, #pgc_protocol_message:ready_for_query{status = Status}, #s_pinging{}, ConnectionData) ->
     {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}};
 
-handle_event(internal, #pgc_protocol_message:_{} = Message, #s_pinging{status = Status}, ConnectionData) ->
-    % Not the ReadyForQuery we sent Sync for, but *some* message from the
-    % server, that alone proves the connection is alive. Go back to ready
-    % using the status from before the ping and re-queue the message so
-    % it gets the same generic handling.
-    {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}, [
-        {next_event, internal, Message}
-    ]};
-
 handle_event(state_timeout, pang, #s_pinging{}, ConnectionData) ->
     pgc_connection_statem_termination:enter(immediate, ping_timeout, ConnectionData);
 
