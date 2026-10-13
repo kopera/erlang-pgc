@@ -154,7 +154,7 @@ stop(ClientRef) ->
 
 -doc """
 Runs a parameterized statement through parse/bind/execute, collecting every row into a
-list shaped of maps.
+list of maps.
 """.
 -spec execute(ClientRef, Statement, Parameters) -> {ok, Metadata, Rows} | {error, Error} when
     ClientRef :: client_ref(),
