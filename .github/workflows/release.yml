@@ -75,7 +75,7 @@ jobs:
       - name: Setup rebar3 hex
         run: |
           mkdir -p ~/.config/rebar3/
-          echo "{plugins, [rebar3_hex]}." >> ~/.config/rebar3/rebar.config
+          echo '{plugins, [{rebar3_hex, "7.3.0"}]}.' >> ~/.config/rebar3/rebar.config
 
       - name: Set the version in the manifest
         run: |
