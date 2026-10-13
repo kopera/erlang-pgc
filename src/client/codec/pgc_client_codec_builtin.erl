@@ -8,6 +8,7 @@
     int8send/1, int8recv/1,
     float4send/1, float4recv/1,
     float8send/1, float8recv/1,
+    numeric_send/3, numeric_recv/3,
     byteasend/1, bytearecv/1, unknownsend/1, unknownrecv/1,
     uuid_send/1, uuid_recv/1,
     inet_send/1, inet_recv/1, cidr_send/1, cidr_recv/1,
@@ -107,6 +108,120 @@ float8recv(<<127, 248, 0, 0, 0, 0, 0, 0>>) -> 'NaN';
 float8recv(<<127, 240, 0, 0, 0, 0, 0, 0>>) -> infinity;
 float8recv(<<255, 240, 0, 0, 0, 0, 0, 0>>) -> '-infinity';
 float8recv(<<Value:64/signed-float>>) -> Value.
+
+% ------------------------------------------------------------------------------
+% numeric
+% ------------------------------------------------------------------------------
+
+-define(numeric_positive, 16#0000).
+-define(numeric_negative, 16#4000).
+-define(numeric_nan, 16#C000).
+-define(numeric_infinity, 16#D000).
+-define(numeric_negative_infinity, 16#F000).
+
+numeric_send('NaN', _Descriptor, _Codec) ->
+    <<0:16, 0:16, ?numeric_nan:16, 0:16>>;
+numeric_send(infinity, _Descriptor, _Codec) ->
+    <<0:16, 0:16, ?numeric_infinity:16, 0:16>>;
+numeric_send('-infinity', _Descriptor, _Codec) ->
+    <<0:16, 0:16, ?numeric_negative_infinity:16, 0:16>>;
+numeric_send(Value, _Descriptor, _Codec) ->
+    {Sign, Unscaled, Scale} = numeric_from_term(Value),
+    numeric_encode(Sign, Unscaled, Scale).
+
+numeric_recv(<<_:16, _:16, ?numeric_nan:16, _:16>>, _Descriptor, _Codec) ->
+    'NaN';
+numeric_recv(<<_:16, _:16, ?numeric_infinity:16, _:16>>, _Descriptor, _Codec) ->
+    infinity;
+numeric_recv(<<_:16, _:16, ?numeric_negative_infinity:16, _:16>>, _Descriptor, _Codec) ->
+    '-infinity';
+numeric_recv(<<Count:16, Weight:16/signed, Sign:16, Scale:16, Digits:Count/binary-unit:16>>, _Descriptor, Codec) ->
+    Value = lists:foldl(fun (Digit, Acc) -> Acc * 10000 + Digit end, 0, [Digit || <<Digit:16>> <= Digits]),
+    Exponent = 4 * (Weight - Count + 1) + Scale,
+    Unscaled = if
+        Exponent >= 0 -> Value * pow10(Exponent);
+        Exponent < 0 -> Value div pow10(-Exponent)
+    end,
+    numeric_to_term(Sign, Unscaled, Scale, pgc_client_codec:option(numeric, representation, binary, Codec)).
+
+numeric_from_term(Value) when is_integer(Value), Value >= 0 ->
+    {?numeric_positive, Value, 0};
+numeric_from_term(Value) when is_integer(Value), Value < 0 ->
+    {?numeric_negative, -Value, 0};
+numeric_from_term(Value) when is_float(Value) ->
+    numeric_from_text(float_to_binary(Value, [short]));
+numeric_from_term(Value) ->
+    case unicode:characters_to_binary(Value) of
+        Text when is_binary(Text) -> numeric_from_text(Text);
+        _ -> erlang:error(badarg, [Value])
+    end.
+
+numeric_from_text(<<$-, Text/binary>>) ->
+    {_, Unscaled, Scale} = numeric_from_text(Text),
+    {?numeric_negative, Unscaled, Scale};
+numeric_from_text(<<$+, Text/binary>>) ->
+    numeric_from_text(Text);
+numeric_from_text(Text) ->
+    {Mantissa, Exponent} = case binary:split(Text, [~"e", ~"E"]) of
+        [M, E] -> {M, binary_to_integer(E)};
+        [M] -> {M, 0}
+    end,
+    {Integer, Fraction} = case binary:split(Mantissa, ~".") of
+        [I, F] -> {I, F};
+        [I] -> {I, ~""}
+    end,
+    Digits = <<Integer/binary, Fraction/binary>>,
+    (Digits =/= ~"" andalso lists:all(fun (C) -> C >= $0 andalso C =< $9 end, binary_to_list(Digits)))
+        orelse erlang:error(badarg, [Text]),
+    Scale = byte_size(Fraction) - Exponent,
+    if
+        Scale >= 0 -> {?numeric_positive, binary_to_integer(Digits), Scale};
+        Scale < 0 -> {?numeric_positive, binary_to_integer(Digits) * pow10(-Scale), 0}
+    end.
+
+numeric_encode(_Sign, 0, Scale) ->
+    <<0:16, 0:16, ?numeric_positive:16, Scale:16>>;
+numeric_encode(Sign, Unscaled, Scale) ->
+    Padding = (4 - Scale rem 4) rem 4,
+    Groups = numeric_groups(Unscaled * pow10(Padding), []),
+    Weight = length(Groups) - 1 - (Scale + Padding) div 4,
+    Digits = lists:reverse(lists:dropwhile(fun (Digit) -> Digit =:= 0 end, lists:reverse(Groups))),
+    <<(length(Digits)):16, Weight:16/signed, Sign:16, Scale:16, << <<Digit:16>> || Digit <- Digits >>/binary>>.
+
+numeric_groups(0, Groups) ->
+    Groups;
+numeric_groups(Value, Groups) ->
+    numeric_groups(Value div 10000, [Value rem 10000 | Groups]).
+
+numeric_to_term(Sign, Unscaled, Scale, binary) ->
+    Digits = integer_to_binary(Unscaled),
+    Padded = case Scale + 1 - byte_size(Digits) of
+        Zeros when Zeros > 0 -> <<(binary:copy(~"0", Zeros))/binary, Digits/binary>>;
+        Zeros when Zeros =< 0 -> Digits
+    end,
+    {Integer, Fraction} = split_binary(Padded, byte_size(Padded) - Scale),
+    Text = if
+        Scale =:= 0 -> Integer;
+        Scale > 0 -> <<Integer/binary, $., Fraction/binary>>
+    end,
+    case Sign of
+        ?numeric_positive -> Text;
+        ?numeric_negative -> <<$-, Text/binary>>
+    end;
+numeric_to_term(Sign, Unscaled, Scale, float) ->
+    Value = Unscaled / pow10(Scale),
+    case Sign of
+        ?numeric_positive -> Value;
+        ?numeric_negative -> -Value
+    end.
+
+pow10(Exponent) ->
+    pow10_(Exponent, 1).
+
+pow10_(0, Acc) ->
+    Acc;
+pow10_(Exponent, Acc) ->
+    pow10_(Exponent - 1, Acc * 10).
 
 % ------------------------------------------------------------------------------
 % bytea (+ unknown, which is wire-identical)
