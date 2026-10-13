@@ -8,7 +8,7 @@
 ]).
 
 -import_record(pgc_connection_statem, [data, send, callback, query, prepare, unprepare, execute, cancel]).
--import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response]).
+-import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response, error_response]).
 
 % -----------------------------------------------------------------------------
 % API
@@ -103,6 +103,9 @@ handle_event(internal, #notification_response{id = SenderId, channel = Channel, 
     {keep_state_and_data, [
         {next_event, internal, #callback{name = handle_notification, args = [SenderId, Channel, Payload]}}
     ]};
+
+handle_event(internal, #error_response{fields = Fields}, _State, ConnectionData) ->
+    pgc_connection_statem_termination:enter(immediate, {error_response, Fields}, ConnectionData);
 
 handle_event({call, From}, Request, _State, _Data) ->
     {keep_state_and_data, [
