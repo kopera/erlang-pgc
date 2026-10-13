@@ -1,4 +1,5 @@
 -module(pgc_transport).
+-moduledoc false.
 -export([
     connect/3,
     dup/2,

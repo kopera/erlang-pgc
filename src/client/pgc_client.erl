@@ -469,15 +469,7 @@ handle_call(_ConnectionInfo, Call, From, #state{} = State) ->
     {[{reply, From, {error, {unknown_call, Call}}}], State}.
 
 
--doc """
-Every request -- `execute`, `query`, and the internally-triggered `refresh` (see
-`handle_prepare_result/4`) -- goes through here. Only the *head* of `State#state.requests` is
-ever dispatched to the wire; everything else just sits there (`phase = queued`) until the head
-finishes, one way or another, and pops. That's the whole safety property this module leans on:
-since only one request is ever mid-flight, nothing ever decides whether a statement name is a
-cache hit from a `Statements` snapshot another, still in-flight request is already invalidating --
-by the time anything reads `Statements`, whatever was running before is already fully done.
-""".
+-doc false.
 handle_cast(ConnectionInfo, {request, FromPid, RequestId, {execute, StatementText, _StatementParameters, Options}}, State) ->
     process_request(ConnectionInfo, FromPid, RequestId, execute, statement_name(Options), StatementText, State);
 
@@ -491,6 +483,7 @@ handle_cast(ConnectionInfo, {cancel, RequestId}, State) ->
     process_cancel(ConnectionInfo, RequestId, State).
 
 
+-doc false.
 handle_info(ConnectionInfo, {{'DOWN', RequestId}, _MonitorRef, process, _Pid, _Reason}, #state{} = State) ->
     handle_cast(ConnectionInfo, {cancel, RequestId}, State).
 
@@ -674,20 +667,11 @@ handle_row_data(_ConnectionInfo, RequestId, RowDescription, RowData, State) ->
             {[], State}
     end.
 
--doc """
-`query` requests (the only ones running over the simple protocol -- `execute_simple/2`'s
-`commit`/`rollback`/`start transaction`/`reset all`) never have rows worth folding into anything
-beyond their own command tag, so this is just `handle_execute_result/4` under another name.
-""".
+-doc false.
 handle_query_result(ConnectionInfo, RequestId, Result, State) ->
     handle_execute_result(ConnectionInfo, RequestId, Result, State).
 
--doc """
-The terminal point for every request, whatever kind it is: `execute` and `query` reply to their
-caller and let the next one in line start; `refresh` has no caller to reply to (it's
-self-monitored, not alias-monitored, so sending to it would crash) -- it just lets the next one
-in line start, which is the paused request it was refreshing types for.
-""".
+-doc false.
 handle_execute_result(ConnectionInfo, RequestId, Result, State) ->
     #state{requests = Requests} = State,
     {value, #request{id = RequestId, kind = Kind, monitor = Monitor}} = queue:peek(Requests),

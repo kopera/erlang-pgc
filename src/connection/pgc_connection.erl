@@ -1,7 +1,5 @@
 -module(pgc_connection).
--moduledoc """
-A generic postgresql connection behaviour.
-""".
+-moduledoc false.
 
 -export([
     start_link/3,

@@ -1,4 +1,5 @@
 -module(pgc_pool).
+-moduledoc false.
 -export([
     start_link/2,
     start_link/3,
