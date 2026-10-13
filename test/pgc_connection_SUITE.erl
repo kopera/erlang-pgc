@@ -16,6 +16,10 @@
     connects_and_reaches_ready_test/1,
     wrong_password_stops_with_error_test/1,
     ping_keepalive_test/1,
+    idle_transaction_timeout_stops_with_error_test/1,
+    query_during_ping_gets_its_own_result_test/1,
+    cancel_is_retried_until_it_takes_effect_test/1,
+    next_query_waits_for_cancel_requests_test/1,
     select_rows_test/1,
     multi_statement_query_test/1,
     invalid_statement_is_not_fatal_test/1,
@@ -101,6 +105,10 @@ groups() ->
             connects_and_reaches_ready_test,
             wrong_password_stops_with_error_test,
             ping_keepalive_test,
+            idle_transaction_timeout_stops_with_error_test,
+            query_during_ping_gets_its_own_result_test,
+            cancel_is_retried_until_it_takes_effect_test,
+            next_query_waits_for_cancel_requests_test,
             select_rows_test,
             multi_statement_query_test,
             invalid_statement_is_not_fatal_test,
@@ -175,6 +183,89 @@ ping_keepalive_test(Config) ->
     after 5000 ->
         ct:fail(no_disconnected_event)
     end.
+
+idle_transaction_timeout_stops_with_error_test(Config) ->
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
+    receive
+        {handler, ready, _Info} -> ok
+    after 5000 ->
+        ct:fail(no_ready_event)
+    end,
+
+    ok = gen_statem:cast(Connection, {query, make_ref(), "set idle_in_transaction_session_timeout = 100"}),
+    receive {handler, result, {ok, <<"SET">>}} -> ok after 5000 -> ct:fail(no_set_result) end,
+    ok = gen_statem:cast(Connection, {query, make_ref(), "begin"}),
+    receive {handler, result, {ok, <<"BEGIN">>}} -> ok after 5000 -> ct:fail(no_begin_result) end,
+
+    receive
+        {handler, disconnected, Reason} ->
+            ?assertMatch({error_response, #{code := <<"25P03">>}}, Reason)
+    after 5000 ->
+        ct:fail(no_disconnected_event)
+    end.
+
+query_during_ping_gets_its_own_result_test(_Config) ->
+    {Backend, Port} = start_backend(),
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), #{
+        address => #{host => "127.0.0.1", port => Port},
+        tls => disable,
+        user => "pgc",
+        database => "pgc",
+        ping_interval => 500
+    }),
+    receive {handler, ready, _Info} -> ok after 5000 -> ct:fail(no_ready_event) end,
+    receive {backend, notice_sent} -> ok after 5000 -> ct:fail(no_ping) end,
+    receive {handler, notice, _Fields} -> ok after 5000 -> ct:fail(no_notice) end,
+
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 1 as n"}),
+    timer:sleep(100),
+    Backend ! {backend, ready_for_query},
+
+    receive {handler, row, _RowDescription, Values} -> ?assertEqual([<<"1">>], Values) after 5000 -> ct:fail(no_row) end,
+    receive {handler, result, Result} -> ?assertEqual({ok, <<"SELECT 1">>}, Result) after 5000 -> ct:fail(no_result) end,
+
+    ok = pgc_connection:stop(Connection).
+
+cancel_is_retried_until_it_takes_effect_test(_Config) ->
+    Port = start_cancelling_backend(),
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), #{
+        address => #{host => "127.0.0.1", port => Port},
+        tls => disable,
+        user => "pgc",
+        database => "pgc",
+        ping_interval => infinity
+    }),
+    receive {handler, ready, _Info} -> ok after 5000 -> ct:fail(no_ready_event) end,
+
+    Ref = make_ref(),
+    ok = gen_statem:cast(Connection, {query, Ref, "select pg_sleep(10)"}),
+    ok = gen_statem:cast(Connection, {cancel, Ref}),
+    receive {backend, cancel_ignored} -> ok after 5000 -> ct:fail(no_cancel_request) end,
+    receive {handler, result, Result} -> ?assertMatch({error, #{code := <<"57014">>}}, Result) after 5000 -> ct:fail(no_result) end,
+
+    ok = pgc_connection:stop(Connection).
+
+next_query_waits_for_cancel_requests_test(_Config) ->
+    Port = start_held_cancel_backend(),
+    {ok, Connection} = pgc_connection:start_link(?MODULE, self(), #{
+        address => #{host => "127.0.0.1", port => Port},
+        tls => disable,
+        user => "pgc",
+        database => "pgc",
+        ping_interval => infinity
+    }),
+    receive {handler, ready, _Info} -> ok after 5000 -> ct:fail(no_ready_event) end,
+
+    Ref = make_ref(),
+    ok = gen_statem:cast(Connection, {query, Ref, "select 1 as n"}),
+    ok = gen_statem:cast(Connection, {cancel, Ref}),
+    receive {handler, result, FirstResult} -> ?assertEqual({ok, <<"SELECT 1">>}, FirstResult) after 5000 -> ct:fail(no_first_result) end,
+
+    ok = gen_statem:cast(Connection, {query, make_ref(), "select 1 as n"}),
+    receive {backend, query_sent_during_cancel, Early} -> ?assertNot(Early) after 5000 -> ct:fail(no_backend_report) end,
+    receive {handler, result, SecondResult} -> ?assertEqual({ok, <<"SELECT 1">>}, SecondResult) after 5000 -> ct:fail(no_second_result) end,
+
+    ok = pgc_connection:stop(Connection).
 
 select_rows_test(Config) ->
     {ok, Connection} = pgc_connection:start_link(?MODULE, self(), connection_options(Config, #{})),
@@ -485,7 +576,8 @@ terminate(Reason, {TestPid, _Pending}) ->
     ok.
 
 -doc false.
-handle_notice(_ConnectionInfo, _Fields, {TestPid, undefined}) ->
+handle_notice(_ConnectionInfo, Fields, {TestPid, undefined}) ->
+    TestPid ! {handler, notice, Fields},
     {[], {TestPid, undefined}};
 handle_notice(_ConnectionInfo, Fields, {TestPid, From}) ->
     % `deferred_reply_test`'s own trigger -- answers a `From` stashed by an earlier
@@ -542,6 +634,8 @@ handle_cast(_ConnectionInfo, {query, Ref, Sql}, {TestPid, Pending}) ->
     % while a statement is already in flight is postponed automatically by
     % `pgc_connection_statem_common` until the connection is back in `#s_ready{}`.
     {[{query, Ref, Sql}], {TestPid, Pending}};
+handle_cast(_ConnectionInfo, {cancel, Ref}, {TestPid, Pending}) ->
+    {[{cancel, Ref}], {TestPid, Pending}};
 handle_cast(_ConnectionInfo, {prepare, Ref, Name, Text}, {TestPid, Pending}) ->
     {[{prepare, Ref, Name, Text}], {TestPid, Pending}};
 handle_cast(_ConnectionInfo, {unprepare, Ref, Name}, {TestPid, Pending}) ->
@@ -584,7 +678,140 @@ drop_database(Database) ->
     ok.
 
 execute_on_server(Template) ->
-    {ok, Client} = pgc_client:start_link(connection_options([], #{database => ct:get_config(postgresql_server_database)})),
+    {ok, Client} = pgc_client:start_link(connection_options([{database, ct:get_config(postgresql_server_database)}], #{})),
     Result = pgc_client:execute(Client, pgc_statement:text(pgc_statement:new(Template)), []),
     ok = pgc_client:stop(Client),
     Result.
+
+start_backend() ->
+    TestPid = self(),
+    Backend = spawn_link(fun () ->
+        {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127, 0, 0, 1}}]),
+        {ok, Port} = inet:port(Listen),
+        TestPid ! {backend, self(), port, Port},
+        {ok, Socket} = gen_tcp:accept(Listen),
+        {ok, <<StartupSize:32/integer>>} = gen_tcp:recv(Socket, 4),
+        {ok, _Startup} = gen_tcp:recv(Socket, StartupSize - 4),
+        ok = gen_tcp:send(Socket, [backend_message($R, <<0:32>>), backend_message($Z, <<"I">>)]),
+        serve_backend(TestPid, Socket, first_sync)
+    end),
+    receive
+        {backend, Backend, port, Port} -> {Backend, Port}
+    end.
+
+serve_backend(TestPid, Socket, Sync) ->
+    case gen_tcp:recv(Socket, 5) of
+        {ok, <<$S, 4:32/integer>>} when Sync =:= first_sync ->
+            ok = gen_tcp:send(Socket, backend_message($N, <<"SNOTICE", 0, "VNOTICE", 0, "C00000", 0, "Mping", 0, 0>>)),
+            TestPid ! {backend, notice_sent},
+            receive {backend, ready_for_query} -> ok end,
+            ok = gen_tcp:send(Socket, backend_message($Z, <<"I">>)),
+            serve_backend(TestPid, Socket, later_sync);
+        {ok, <<$S, 4:32/integer>>} when Sync =:= later_sync ->
+            ok = gen_tcp:send(Socket, backend_message($Z, <<"I">>)),
+            serve_backend(TestPid, Socket, Sync);
+        {ok, <<$Q, QuerySize:32/integer>>} ->
+            {ok, _Query} = gen_tcp:recv(Socket, QuerySize - 4),
+            ok = gen_tcp:send(Socket, [
+                backend_message($T, <<1:16, "n", 0, 0:32, 0:16, 23:32, 4:16, -1:32, 0:16>>),
+                backend_message($D, <<1:16, 1:32, "1">>),
+                backend_message($C, <<"SELECT 1", 0>>),
+                backend_message($Z, <<"I">>)
+            ]),
+            serve_backend(TestPid, Socket, Sync);
+        {ok, <<$X, 4:32/integer>>} ->
+            gen_tcp:close(Socket);
+        {error, closed} ->
+            ok
+    end.
+
+backend_message(Code, Payload) ->
+    <<Code, (byte_size(Payload) + 4):32/integer, Payload/binary>>.
+
+start_cancelling_backend() ->
+    TestPid = self(),
+    Backend = spawn_link(fun () ->
+        {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127, 0, 0, 1}}]),
+        {ok, Port} = inet:port(Listen),
+        TestPid ! {backend, self(), port, Port},
+        {ok, Socket} = gen_tcp:accept(Listen),
+        {ok, <<StartupSize:32/integer>>} = gen_tcp:recv(Socket, 4),
+        {ok, _Startup} = gen_tcp:recv(Socket, StartupSize - 4),
+        ok = gen_tcp:send(Socket, [backend_message($R, <<0:32>>), backend_message($K, <<1:32, 2:32>>), backend_message($Z, <<"I">>)]),
+        {ok, <<$Q, QuerySize:32/integer>>} = gen_tcp:recv(Socket, 5),
+        {ok, _Query} = gen_tcp:recv(Socket, QuerySize - 4),
+        ok = accept_cancel_request(Listen),
+        TestPid ! {backend, cancel_ignored},
+        ok = accept_cancel_request(Listen),
+        ok = gen_tcp:send(Socket, [
+            backend_message($E, <<"SERROR", 0, "VERROR", 0, "C57014", 0, "Mcanceling statement due to user request", 0, 0>>),
+            backend_message($Z, <<"I">>)
+        ]),
+        case gen_tcp:recv(Socket, 5) of
+            {ok, <<$X, 4:32/integer>>} -> gen_tcp:close(Socket);
+            {error, closed} -> ok
+        end
+    end),
+    receive
+        {backend, Backend, port, Port} -> Port
+    end.
+
+accept_cancel_request(Listen) ->
+    {ok, Socket} = gen_tcp:accept(Listen),
+    {ok, <<16:32/integer, 1234:16/integer, 5678:16/integer, 1:32/integer, 2:32/integer>>} = gen_tcp:recv(Socket, 16),
+    gen_tcp:close(Socket).
+
+start_held_cancel_backend() ->
+    TestPid = self(),
+    Backend = spawn_link(fun () ->
+        {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {ip, {127, 0, 0, 1}}]),
+        {ok, Port} = inet:port(Listen),
+        TestPid ! {backend, self(), port, Port},
+        {ok, Socket} = gen_tcp:accept(Listen),
+        {ok, <<StartupSize:32/integer>>} = gen_tcp:recv(Socket, 4),
+        {ok, _Startup} = gen_tcp:recv(Socket, StartupSize - 4),
+        ok = gen_tcp:send(Socket, [backend_message($R, <<0:32>>), backend_message($K, <<1:32, 2:32>>), backend_message($Z, <<"I">>)]),
+        ok = answer_query(Socket, gen_tcp:recv(Socket, 5)),
+        {ok, Cancel} = gen_tcp:accept(Listen),
+        {ok, <<16:32/integer, 1234:16/integer, 5678:16/integer, 1:32/integer, 2:32/integer>>} = gen_tcp:recv(Cancel, 16),
+        _ = spawn_link(fun () -> close_cancel_requests(Listen) end),
+        ok = send_select_result(Socket),
+        Early = gen_tcp:recv(Socket, 5, 500),
+        TestPid ! {backend, query_sent_during_cancel, Early =/= {error, timeout}},
+        ok = gen_tcp:close(Cancel),
+        Next = case Early of
+            {ok, _Header} -> Early;
+            {error, timeout} -> gen_tcp:recv(Socket, 5)
+        end,
+        ok = answer_query(Socket, Next),
+        ok = send_select_result(Socket),
+        case gen_tcp:recv(Socket, 5) of
+            {ok, <<$X, 4:32/integer>>} -> gen_tcp:close(Socket);
+            {error, closed} -> ok
+        end
+    end),
+    receive
+        {backend, Backend, port, Port} -> Port
+    end.
+
+answer_query(Socket, {ok, <<$Q, QuerySize:32/integer>>}) ->
+    {ok, _Query} = gen_tcp:recv(Socket, QuerySize - 4),
+    ok.
+
+send_select_result(Socket) ->
+    gen_tcp:send(Socket, [
+        backend_message($T, <<1:16, "n", 0, 0:32, 0:16, 23:32, 4:16, -1:32, 0:16>>),
+        backend_message($D, <<1:16, 1:32, "1">>),
+        backend_message($C, <<"SELECT 1", 0>>),
+        backend_message($Z, <<"I">>)
+    ]).
+
+close_cancel_requests(Listen) ->
+    case gen_tcp:accept(Listen) of
+        {ok, Cancel} ->
+            _ = gen_tcp:recv(Cancel, 16),
+            ok = gen_tcp:close(Cancel),
+            close_cancel_requests(Listen);
+        {error, closed} ->
+            ok
+    end.

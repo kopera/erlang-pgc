@@ -106,7 +106,8 @@ end, #{}).
     | unpreparing
     | executing
     | querying
-    | awaiting_parameters.
+    | awaiting_parameters
+    | cancelled.
 
 -record #statement{
     hash :: binary(),
@@ -584,15 +585,15 @@ process_parameters(RequestId, EncodedParameters, #state{requests = Requests} = S
 
 process_cancel(ConnectionInfo, RequestId, #state{requests = Requests} = State) ->
     case queue:peek(Requests) of
-        {value, #request{id = RequestId, phase = awaiting_parameters, monitor = Monitor}} ->
+        {value, #request{id = RequestId, phase = awaiting_parameters}} ->
             % Nothing outstanding on the wire to cancel -- we're just waiting on the caller,
             % who's given up.
-            erlang:demonitor(Monitor, [flush]),
+            drop_request(ConnectionInfo, State);
+        {value, #request{id = RequestId, phase = Phase} = Request} when Phase =:= preparing; Phase =:= unpreparing ->
             {{value, _}, Rest} = queue:out(Requests),
-            case queue:is_empty(Rest) of
-                true -> {[], State#state{requests = Rest}};
-                false -> dispatch(ConnectionInfo, State#state{requests = Rest})
-            end;
+            {[], State#state{requests = queue:in_r(Request#request{phase = cancelled}, Rest)}};
+        {value, #request{id = RequestId, phase = cancelled}} ->
+            {[], State};
         {value, #request{id = RequestId}} ->
             {[{cancel, RequestId}], State};
         _ ->
@@ -666,35 +667,40 @@ handle_prepare_result(ConnectionInfo, RequestId, {ok, StatementName, StatementDe
         row_description = RowDescription
     },
     NewState = State#state{statements = Statements#{StatementName => Statement}},
-    NeededOids = ordsets:from_list(ParametersDescription ++ [
-        Field#row_description_field.type_oid || Field <- RowDescription
-    ]),
-    case lists:all(fun (Id) -> pgc_client_types:has(Id, Types) end, NeededOids) of
-        true when ParametersDescription =/= [] ->
-            RequestId ! {parameters_required, RequestId, Types, ParametersDescription},
-            {{value, _}, Rest} = queue:out(NewState#state.requests),
-            {[], NewState#state{requests = queue:in_r(Request#request{phase = awaiting_parameters}, Rest)}};
-        true when ParametersDescription =:= [] ->
-            {{value, _}, Rest} = queue:out(NewState#state.requests),
-            {[{execute, RequestId, StatementName, [], #{result_format => binary}}],
-                NewState#state{requests = queue:in_r(Request#request{phase = executing}, Rest)}};
-        false ->
-            % Missing types -- run the refresh ahead of this request (still holding its own
-            % now-cached #statement{} right behind it) rather than in its place. Once the
-            % refresh finishes and pops, this same request comes back up as the new head and
-            % dispatch_execute/3 finds its own statement already cached -- the exact same
-            % cache-hit replay used for an ordinary repeat call.
-            Refresh = #request{
-                id = make_ref(),
-                statement_name = ~"",
-                statement_text = refresh_statement_text(),
-                kind = refresh,
-                phase = queued,
-                % No caller to actually monitor -- self() just satisfies the field (a refresh's
-                % monitor never fires; demonitored like any other at completion regardless).
-                monitor = erlang:monitor(process, self())
-            },
-            dispatch(ConnectionInfo, NewState#state{requests = queue:in_r(Refresh, NewState#state.requests)})
+    case Request#request.phase of
+        cancelled ->
+            drop_request(ConnectionInfo, NewState);
+        preparing ->
+            NeededOids = ordsets:from_list(ParametersDescription ++ [
+                Field#row_description_field.type_oid || Field <- RowDescription
+            ]),
+            case lists:all(fun (Id) -> pgc_client_types:has(Id, Types) end, NeededOids) of
+                true when ParametersDescription =/= [] ->
+                    RequestId ! {parameters_required, RequestId, Types, ParametersDescription},
+                    {{value, _}, Rest} = queue:out(NewState#state.requests),
+                    {[], NewState#state{requests = queue:in_r(Request#request{phase = awaiting_parameters}, Rest)}};
+                true when ParametersDescription =:= [] ->
+                    {{value, _}, Rest} = queue:out(NewState#state.requests),
+                    {[{execute, RequestId, StatementName, [], #{result_format => binary}}],
+                        NewState#state{requests = queue:in_r(Request#request{phase = executing}, Rest)}};
+                false ->
+                    % Missing types -- run the refresh ahead of this request (still holding its own
+                    % now-cached #statement{} right behind it) rather than in its place. Once the
+                    % refresh finishes and pops, this same request comes back up as the new head and
+                    % dispatch_execute/3 finds its own statement already cached -- the exact same
+                    % cache-hit replay used for an ordinary repeat call.
+                    Refresh = #request{
+                        id = make_ref(),
+                        statement_name = ~"",
+                        statement_text = refresh_statement_text(),
+                        kind = refresh,
+                        phase = queued,
+                        % No caller to actually monitor -- self() just satisfies the field (a refresh's
+                        % monitor never fires; demonitored like any other at completion regardless).
+                        monitor = erlang:monitor(process, self())
+                    },
+                    dispatch(ConnectionInfo, NewState#state{requests = queue:in_r(Refresh, NewState#state.requests)})
+            end
     end;
 
 handle_prepare_result(ConnectionInfo, RequestId, {error, Fields}, State) ->
@@ -702,16 +708,21 @@ handle_prepare_result(ConnectionInfo, RequestId, {error, Fields}, State) ->
 
 
 -doc false.
-handle_unprepare_result(_ConnectionInfo, RequestId, {ok, Name}, State) ->
+handle_unprepare_result(ConnectionInfo, RequestId, {ok, Name}, State) ->
     % Only ever reached to reclaim a name for a re-prepare with new text -- the Close is now
     % confirmed, so the name is free and `Statements` can drop the stale entry.
     #state{requests = Requests, statements = Statements} = State,
     {value, #request{id = RequestId} = Request} = queue:peek(Requests),
-    {{value, _}, Rest} = queue:out(Requests),
-    {[{prepare, RequestId, Name, Request#request.statement_text}], State#state{
-        statements = maps:remove(Name, Statements),
-        requests = queue:in_r(Request#request{phase = preparing}, Rest)
-    }};
+    case Request#request.phase of
+        cancelled ->
+            drop_request(ConnectionInfo, State#state{statements = maps:remove(Name, Statements)});
+        unpreparing ->
+            {{value, _}, Rest} = queue:out(Requests),
+            {[{prepare, RequestId, Name, Request#request.statement_text}], State#state{
+                statements = maps:remove(Name, Statements),
+                requests = queue:in_r(Request#request{phase = preparing}, Rest)
+            }}
+    end;
 
 handle_unprepare_result(ConnectionInfo, RequestId, {error, Fields}, State) ->
     % Close didn't actually happen (a cancel beat it) -- the old statement is still live under
@@ -744,14 +755,17 @@ handle_query_result(ConnectionInfo, RequestId, Result, State) ->
 
 -doc false.
 handle_execute_result(ConnectionInfo, RequestId, Result, State) ->
-    #state{requests = Requests} = State,
-    {value, #request{id = RequestId, kind = Kind, monitor = Monitor}} = queue:peek(Requests),
-    erlang:demonitor(Monitor, [flush]),
+    {value, #request{id = RequestId, kind = Kind}} = queue:peek(State#state.requests),
     case Kind of
         refresh -> ok;
         _ -> RequestId ! {done, RequestId, Result}
     end,
-    {{value, _}, Rest} = queue:out(Requests),
+    drop_request(ConnectionInfo, State).
+
+
+drop_request(ConnectionInfo, #state{requests = Requests} = State) ->
+    {{value, #request{monitor = Monitor}}, Rest} = queue:out(Requests),
+    erlang:demonitor(Monitor, [flush]),
     case queue:is_empty(Rest) of
         true -> {[], State#state{requests = Rest}};
         false -> dispatch(ConnectionInfo, State#state{requests = Rest})
@@ -961,6 +975,31 @@ handle_unprepare_result_cancelled_test() ->
     ?assertEqual({done, Ref, {error, #{}}}, receive Message -> Message after 0 -> timeout end),
     erlang:demonitor(Ref, [flush]),
     Standin ! stop.
+
+handle_cast_cancel_preparing_test() ->
+    Id = make_ref(),
+    Req = test_request(Id, ~"select $1", preparing, execute),
+    State = test_state([Req], #{}),
+    {CancelActions, CancelledState} = handle_cast(#{}, {cancel, Id}, State),
+    ?assertEqual([], CancelActions),
+    ?assertMatch({value, #request{id = Id, phase = cancelled}}, queue:peek(CancelledState#state.requests)),
+    {Actions, NewState} = handle_prepare_result(#{}, Id, {ok, ~"", #{parameters_description => [23], row_description => []}}, CancelledState),
+    ?assertEqual([], Actions),
+    ?assertEqual(true, queue:is_empty(NewState#state.requests)),
+    ?assertMatch(#{~"" := #statement{parameters_description = [23]}}, NewState#state.statements),
+    ?assertEqual(timeout, receive Message -> Message after 0 -> timeout end).
+
+handle_cast_cancel_unpreparing_test() ->
+    Id = make_ref(),
+    Req = #request{id = Id, statement_name = ~"my_statement", statement_text = ~"select 1", phase = unpreparing, kind = execute, monitor = erlang:monitor(process, self())},
+    Cached = #statement{hash = ~"old-hash", parameters_description = [], row_description = []},
+    State = test_state([Req], #{~"my_statement" => Cached}),
+    {CancelActions, CancelledState} = handle_cast(#{}, {cancel, Id}, State),
+    ?assertEqual([], CancelActions),
+    {Actions, NewState} = handle_unprepare_result(#{}, Id, {ok, ~"my_statement"}, CancelledState),
+    ?assertEqual([], Actions),
+    ?assertEqual(true, queue:is_empty(NewState#state.requests)),
+    ?assertEqual(#{}, NewState#state.statements).
 
 -doc "Refused before anything is sent, so no connection is needed. Bytes count, not characters.".
 statement_names_longer_than_postgres_keeps_are_refused_test() ->

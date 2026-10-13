@@ -8,7 +8,9 @@
 ]).
 
 -import_record(pgc_connection_statem, [data, send, callback, query, prepare, unprepare, execute, cancel]).
--import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response]).
+-import_record(pgc_protocol_message, [parameter_status, notice_response, notification_response, error_response]).
+
+-define(CANCEL_REQUEST_INTERVAL, 100).
 
 % -----------------------------------------------------------------------------
 % API
@@ -43,9 +45,16 @@ handle_event(internal, #cancel{}, _State, #data{backend_key = undefined}) ->
     logger:warning("pgc_connection: cancel request failed: not supported"),
     keep_state_and_data;
 
-handle_event(internal, #cancel{}, _State, #data{transport = Transport, backend_key = {Id, Secret}}) ->
-    _ = spawn(fun () -> send_cancel_request(Transport, Id, Secret) end),
-    keep_state_and_data;
+handle_event(internal, #cancel{ref = Ref}, _State, #data{transport = Transport, backend_key = {Id, Secret}, cancel_senders = CancelSenders} = ConnectionData) ->
+    {Pid, Monitor} = spawn_monitor(fun () -> send_cancel_request(Transport, Id, Secret) end),
+    {keep_state, ConnectionData#data{cancel_senders = CancelSenders#{Pid => Monitor}}, [
+        {{timeout, cancel}, ?CANCEL_REQUEST_INTERVAL, Ref}
+    ]};
+
+handle_event({timeout, cancel}, Ref, _State, _ConnectionData) ->
+    {keep_state_and_data, [
+        {next_event, internal, #cancel{ref = Ref}}
+    ]};
 
 handle_event(internal, #send{}, _State, #data{transport = undefined}) ->
     keep_state_and_data;
@@ -104,6 +113,9 @@ handle_event(internal, #notification_response{id = SenderId, channel = Channel, 
         {next_event, internal, #callback{name = handle_notification, args = [SenderId, Channel, Payload]}}
     ]};
 
+handle_event(internal, #error_response{fields = Fields}, _State, ConnectionData) ->
+    pgc_connection_statem_termination:enter(immediate, {error_response, Fields}, ConnectionData);
+
 handle_event({call, From}, Request, _State, _Data) ->
     {keep_state_and_data, [
         {next_event, internal, #callback{name = handle_call, args = [Request, From]}}
@@ -116,6 +128,9 @@ handle_event(cast, Request, _State, _Data) ->
 
 % handle_event(info, {{'DOWN', owner}, OwnerMonitor, process, _Pid, _Reason}, _Phase, #data{owner_monitor = OwnerMonitor} = ConnectionData) ->
 %     pgc_connection_statem_termination:enter(graceful, normal, ConnectionData);
+
+handle_event(info, {'DOWN', _Monitor, process, Pid, _Reason}, _State, #data{cancel_senders = CancelSenders} = ConnectionData) when is_map_key(Pid, CancelSenders) ->
+    {keep_state, ConnectionData#data{cancel_senders = maps:remove(Pid, CancelSenders)}};
 
 handle_event(info, Info, _State, #data{transport = undefined} = _ConnectionData)->
     {keep_state_and_data, [

@@ -66,6 +66,7 @@
 
     backend_key :: {non_neg_integer(), binary()} | undefined,
     backend_parameters :: #{binary() => binary()},
+    cancel_senders :: #{pid() => reference()},
 
     current_ref :: term() | undefined,
     status :: idle | transaction | error,
@@ -85,6 +86,10 @@
 }.
 
 -record #s_pinging{
+    status :: idle | transaction | error
+}.
+
+-record #s_cancelling{
     status :: idle | transaction | error
 }.
 
@@ -146,6 +151,10 @@
 -spec ready(Status, ConnectionData) -> gen_statem:event_handler_result(#s_ready{}, ConnectionData) when
     Status :: idle | transaction | error,
     ConnectionData :: #data{}.
+ready(Status, #data{cancel_senders = CancelSenders} = ConnectionData) when map_size(CancelSenders) > 0 ->
+    {next_state, #s_cancelling{status = Status}, ConnectionData#data{current_ref = undefined, status = Status}, [
+        {change_callback_module, ?MODULE}
+    ]};
 ready(Status, ConnectionData) ->
     {next_state, #s_ready{status = Status}, ConnectionData#data{current_ref = undefined, status = Status}, [
         {change_callback_module, ?MODULE},
@@ -196,6 +205,7 @@ init(#args{
 
         backend_key = undefined,
         backend_parameters = #{},
+        cancel_senders = #{},
 
         current_ref = undefined,
         status = idle,
@@ -299,17 +309,24 @@ handle_event(enter, _OldState, #s_pinging{}, ConnectionData) ->
 handle_event(internal, #pgc_protocol_message:ready_for_query{status = Status}, #s_pinging{}, ConnectionData) ->
     {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}};
 
-handle_event(internal, #pgc_protocol_message:_{} = Message, #s_pinging{status = Status}, ConnectionData) ->
-    % Not the ReadyForQuery we sent Sync for, but *some* message from the
-    % server, that alone proves the connection is alive. Go back to ready
-    % using the status from before the ping and re-queue the message so
-    % it gets the same generic handling.
-    {next_state, #s_ready{status = Status}, ConnectionData#data{status = Status}, [
-        {next_event, internal, Message}
-    ]};
-
 handle_event(state_timeout, pang, #s_pinging{}, ConnectionData) ->
     pgc_connection_statem_termination:enter(immediate, ping_timeout, ConnectionData);
+
+% -------------------------------------------------------------------------------
+% State: cancelling
+% -------------------------------------------------------------------------------
+
+handle_event(enter, _OldState, #s_cancelling{}, _ConnectionData) ->
+    keep_state_and_data;
+
+handle_event(info, {'DOWN', _Monitor, process, Pid, _Reason}, #s_cancelling{status = Status}, #data{cancel_senders = CancelSenders} = ConnectionData) when is_map_key(Pid, CancelSenders) ->
+    RemainingCancelSenders = maps:remove(Pid, CancelSenders),
+    if
+        map_size(RemainingCancelSenders) =:= 0 ->
+            ready(Status, ConnectionData#data{cancel_senders = RemainingCancelSenders});
+        map_size(RemainingCancelSenders) > 0 ->
+            {keep_state, ConnectionData#data{cancel_senders = RemainingCancelSenders}}
+    end;
 
 % -------------------------------------------------------------------------------
 % state: *
