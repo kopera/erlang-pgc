@@ -631,7 +631,7 @@ drop_database(Database) ->
     ok.
 
 execute_on_server(Template) ->
-    {ok, Client} = pgc_client:start_link(connection_options([], #{database => ct:get_config(postgresql_server_database)})),
+    {ok, Client} = pgc_client:start_link(connection_options([{database, ct:get_config(postgresql_server_database)}], #{})),
     Result = pgc_client:execute(Client, pgc_statement:text(pgc_statement:new(Template)), []),
     ok = pgc_client:stop(Client),
     Result.
