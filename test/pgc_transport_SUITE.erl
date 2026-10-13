@@ -17,7 +17,8 @@
     keeps_given_server_name_test/1,
     dup_sends_server_name_test/1,
     tls_without_options_does_not_verify_test/1,
-    verify_full_checks_hostname_test/1
+    verify_full_checks_hostname_test/1,
+    verify_full_accepts_wildcard_test/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -51,7 +52,8 @@ all() ->
         keeps_given_server_name_test,
         dup_sends_server_name_test,
         tls_without_options_does_not_verify_test,
-        verify_full_checks_hostname_test
+        verify_full_checks_hostname_test,
+        verify_full_accepts_wildcard_test
     ].
 
 
@@ -115,6 +117,15 @@ verify_full_checks_hostname_test(_Config) ->
     ),
     {Port2, CACerts2} = start_server("localhost", 1),
     {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port2}, sslmode_options("verify-full", CACerts2), 5000),
+    pgc_transport:close(Transport).
+
+verify_full_accepts_wildcard_test(_Config) ->
+    {Port, CACerts} = start_server("*.pgc.test", 1),
+    #{tls_options := TLSOptions} = Options = sslmode_options("verify-full", CACerts),
+    {ok, Transport} = pgc_transport:connect(#{host => "localhost", port => Port}, Options#{
+        tls_options := [{server_name_indication, "db.pgc.test"} | TLSOptions]
+    }, 5000),
+    ?assertEqual({ok, "db.pgc.test"}, receive_server_name()),
     pgc_transport:close(Transport).
 
 
