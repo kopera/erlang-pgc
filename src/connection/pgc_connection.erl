@@ -1,7 +1,5 @@
 -module(pgc_connection).
--moduledoc """
-A generic postgresql connection behaviour.
-""".
+-moduledoc false.
 
 -export([
     start_link/3,
@@ -142,7 +140,7 @@ The connection is about to stop. No further callbacks follow.
 % -----------------------------------------------------------------------------
 
 -type start_options() :: #{
-    address := pgc_transport:address(),
+    address := pgc_client_options:address(),
     tls => disable | prefer | require,
     tls_options => [ssl:tls_client_option()],
     connect_timeout => timeout(),

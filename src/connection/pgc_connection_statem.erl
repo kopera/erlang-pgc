@@ -35,7 +35,7 @@
 -record #args{
     % owner :: pid(),
 
-    address :: pgc_transport:address(),
+    address :: pgc_client_options:address(),
 
     connect_options :: pgc_transport:connect_options(),
     connect_timeout :: timeout(),
@@ -91,7 +91,7 @@
 % Actions ----------------------------------------------------------------------
 
 -record #connect{
-    address :: pgc_transport:address(),
+    address :: pgc_client_options:address(),
     connect_options :: pgc_transport:connect_options(),
     connect_timeout :: timeout(),
 

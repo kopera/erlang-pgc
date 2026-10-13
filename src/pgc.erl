@@ -1,4 +1,34 @@
 -module(pgc).
+-moduledoc """
+A PostgreSQL client with a pool of connections.
+
+Start a pool from client options and run statements on it:
+
+```erlang
+{ok, ClientOptions} = pgc_client_options:from_uri(~"postgresql://postgres:postgres@localhost/postgres"),
+{ok, Pool} = pgc:start_link(ClientOptions, #{max_size => 10}),
+{ok, #{command := ~"select", rows := 1}, [#{~"answer" := 42}]} =
+    pgc:execute(Pool, {~"select $1::int4 as answer", [42]}).
+```
+
+A transaction holds one connection. Its statements run on the transaction reference, and the fun
+returns `{commit, Result}` or `{rollback, Result}`:
+
+```erlang
+Name = pgc:transaction(Pool, fun (Transaction) ->
+    {ok, _, [#{~"name" := Name}]} = pgc:execute(Transaction, {~"select $1::text as name", [~"pgc"]}),
+    {commit, Name}
+end).
+```
+
+Under a supervisor, start the pool with a child specification:
+
+```erlang
+pgc:child_spec(my_pool, {local, my_pool}, ClientOptions, #{max_size => 10}).
+```
+
+Statements can also be templates, see `m:pgc_statement`. For a single connection, see `m:pgc_client`.
+""".
 -export([
     start_link/2,
     start_link/3,
@@ -13,6 +43,10 @@
     transaction/3
 ]).
 -export_type([
+    pool_name/0,
+    pool_ref/0,
+    pool_options/0,
+
     transaction_ref/0,
     transaction_options/0,
 
@@ -26,6 +60,12 @@
 % ------------------------------------------------------------------------------
 % Types
 % ------------------------------------------------------------------------------
+
+-type pool_name() :: supervisor:sup_name().
+-type pool_ref() :: supervisor:sup_ref().
+-type pool_options() :: #{
+    max_size => pos_integer()
+}.
 
 -type transaction_ref() :: reference().
 -type transaction_options() :: #{
@@ -44,29 +84,29 @@
 % API
 % ------------------------------------------------------------------------------
 
--spec start_link(pgc_client_options:t(), pgc_pool:options()) -> {ok, pid()}.
+-spec start_link(pgc_client_options:t(), pool_options()) -> {ok, pid()}.
 start_link(ClientOptions, PoolOptions) ->
     pgc_pool:start_link(ClientOptions, PoolOptions).
 
 
--spec start_link(pgc_pool:pool_name(), pgc_client_options:t(), pgc_pool:options()) -> {ok, pid()}.
+-spec start_link(pool_name(), pgc_client_options:t(), pool_options()) -> {ok, pid()}.
 start_link(Name, ClientOptions, PoolOptions) ->
     pgc_pool:start_link(Name, ClientOptions, PoolOptions).
 
 
--spec child_spec(Id, pgc_client_options:t(), pgc_pool:options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pgc_client_options:t(), pool_options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, ClientOptions, PoolOptions) ->
     pgc_pool:child_spec(Id, ClientOptions, PoolOptions).
 
 
--spec child_spec(Id, pgc_pool:pool_name(), pgc_client_options:t(), pgc_pool:options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pool_name(), pgc_client_options:t(), pool_options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, Name, ClientOptions, PoolOptions) ->
     pgc_pool:child_spec(Id, Name, ClientOptions, PoolOptions).
 
 
--spec stop(pgc_pool:pool_ref()) -> ok.
+-spec stop(pool_ref()) -> ok.
 stop(PoolRef) ->
     pgc_pool:stop(PoolRef).
 
@@ -74,7 +114,7 @@ stop(PoolRef) ->
 
 -spec execute(TransactionRef | PoolRef, Statement) -> {ok, Metadata, Rows} | {error, Error} when
     TransactionRef :: transaction_ref(),
-    PoolRef :: pgc_pool:pool_ref(),
+    PoolRef :: pool_ref(),
     Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:template(),
     Parameters :: [dynamic()],
     Metadata :: pgc_client:result_metadata(),
@@ -86,7 +126,7 @@ execute(Client, Statement) ->
 
 -spec execute(TransactionRef | PoolRef, Statement, Options) -> {ok, Metadata, Rows} | {error, Error} when
     TransactionRef :: transaction_ref(),
-    PoolRef :: pgc_pool:pool_ref(),
+    PoolRef :: pool_ref(),
     Statement :: unicode:chardata() | {unicode:chardata(), Parameters} | pgc_statement:t() | pgc_statement:template(),
     Parameters :: [dynamic()],
     Options :: pgc_client:execute_options(),
@@ -113,14 +153,14 @@ execute(PoolRef, Statement, Options) ->
 
 
 -spec transaction(PoolRef, Transaction) -> Result when
-    PoolRef :: pgc_pool:pool_ref(),
+    PoolRef :: pool_ref(),
     Transaction :: fun((transaction_ref()) -> {commit | rollback, Result}).
 transaction(PoolRef, Transaction) ->
     transaction(PoolRef, Transaction, #{}).
 
 
 -spec transaction(PoolRef, Transaction, Options) -> Result when
-    PoolRef :: pgc_pool:pool_ref(),
+    PoolRef :: pool_ref(),
     Transaction :: fun((transaction_ref()) -> {commit | rollback, Result}),
     Options :: transaction_options().
 transaction(PoolRef, Transaction, Options) when is_function(Transaction, 1) ->

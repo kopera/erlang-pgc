@@ -1,7 +1,38 @@
 -module(pgc_client).
 -moduledoc """
-A client implementation based on the `m:pgc_connection` behaviour suitable for
-sending queries to the PostgreSQL server.
+A client for sending queries to the PostgreSQL server over one connection.
+
+```erlang
+{ok, Options} = pgc_client_options:from_uri(~"postgresql://postgres:postgres@localhost/postgres"),
+{ok, Client} = pgc_client:start_link(Options),
+{ok, #{command := ~"select", rows := 1}, [#{~"answer" := 42}]} =
+    pgc_client:execute(Client, ~"select $1::int4 as answer", [42]).
+```
+
+Rows are maps by default. The `row` option selects another shape:
+
+```erlang
+{ok, _, [{42, ~"pgc"}]} =
+    pgc_client:execute(Client, ~"select 42 as answer, 'pgc' as name", [], #{row => tuple}).
+```
+
+`execute_fold/6` folds over the rows as they arrive, without collecting them:
+
+```erlang
+{ok, #{rows := 10}, 55} = pgc_client:execute_fold(Client, ~"select generate_series(1, 10)", [],
+    fun (_Columns, [N], Sum) -> {continue, Sum + N} end, 0, #{}).
+```
+
+`transaction/3` runs a fun in a transaction, committed or rolled back as the fun returns:
+
+```erlang
+42 = pgc_client:transaction(Client, fun () ->
+    {ok, _, [#{~"answer" := Answer}]} = pgc_client:execute(Client, ~"select 42 as answer", []),
+    {commit, Answer}
+end, #{}).
+```
+
+`stop/1` closes the connection.
 """.
 
 -export([
@@ -17,9 +48,13 @@ sending queries to the PostgreSQL server.
     reset/1
 ]).
 -export_type([
+    client_name/0,
+    client_ref/0,
     statement_text/0,
     statement_parameters/0,
     execute_options/0,
+    execute_fold_fun/1,
+    execute_fold_options/0,
     transaction_options/0,
     result_metadata/0,
     request_error/0
@@ -79,6 +114,8 @@ sending queries to the PostgreSQL server.
     row_description :: [pgc_protocol_message:row_description_field()]
 }.
 -type statement() :: #statement{}.
+-type client_name() :: gen_statem:server_name().
+-type client_ref() :: gen_statem:server_ref().
 -type statement_text() :: unicode:chardata().
 -type statement_parameters() :: [term() | null].
 
@@ -91,7 +128,7 @@ sending queries to the PostgreSQL server.
 -doc """
 Start a new postgresql client connection.
 """.
--spec start_link(pgc_client_options:t()) -> pgc_connection:start_ret().
+-spec start_link(pgc_client_options:t()) -> gen_statem:start_ret().
 start_link(Options) ->
     pgc_connection:start_link(?MODULE, [], Options).
 
@@ -100,10 +137,9 @@ start_link(Options) ->
 Start a new postgresql client connection registered using
 the provided `ClientName`.
 
-`ClientName` specifies the `t:pgc_connection:connection_name/0` to
-register for the `m:pgc_connection` process.
+`ClientName` specifies the `t:client_name/0` to register for the client process.
 """.
--spec start_link(pgc_connection:connection_name(), pgc_client_options:t()) -> pgc_connection:start_ret().
+-spec start_link(client_name(), pgc_client_options:t()) -> gen_statem:start_ret().
 start_link(ClientName, Options) ->
     pgc_connection:start_link(ClientName, ?MODULE, [], Options).
 
@@ -111,7 +147,7 @@ start_link(ClientName, Options) ->
 -doc """
 Orders the client to exit and waits for it to terminate.
 """.
--spec stop(pgc_connection:connection_ref()) -> ok.
+-spec stop(client_ref()) -> ok.
 stop(ClientRef) ->
     pgc_connection:stop(ClientRef).
 
@@ -121,7 +157,7 @@ Runs a parameterized statement through parse/bind/execute, collecting every row 
 list shaped of maps.
 """.
 -spec execute(ClientRef, Statement, Parameters) -> {ok, Metadata, Rows} | {error, Error} when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     Statement :: statement_text(),
     Parameters :: statement_parameters(),
     Metadata :: result_metadata(),
@@ -142,7 +178,7 @@ exits with `exit({timeout, _})`.
 as Postgres keeps no more of a name; a longer one raises `{pgc, {statement_name_too_long, Name}}`.
 """.
 -spec execute(ClientRef, Statement, Parameters, Options) -> {ok, Metadata, Rows} | {error, Error} when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     Statement :: statement_text(),
     Parameters :: statement_parameters(),
     Options :: execute_options(),
@@ -161,10 +197,11 @@ as Postgres keeps no more of a name; a longer one raises `{pgc, {statement_name_
 }.
 execute(ClientRef, StatementText, Parameters, Options) ->
     RowFormat = maps:get(row, Options, map),
-    RemainingOptions = maps:without([row], Options),
-    case execute_fold(ClientRef, StatementText, Parameters, fun (RowDescription, Values, Acc) ->
+    Request = {execute, StatementText, Parameters, maps:with([cache], Options)},
+    RequestOptions = maps:without([row, cache], Options),
+    case request(ClientRef, Request, RequestOptions, fun (RowDescription, Values, Acc) ->
         {continue, [format_row(RowFormat, RowDescription, Values) | Acc]}
-    end, [], RemainingOptions) of
+    end, []) of
         {ok, Metadata, Rows} ->
             {ok, Metadata, lists:reverse(Rows)};
         {error, _} = Error -> Error
@@ -190,16 +227,18 @@ format_row(proplist, Fields, Values) ->
 Runs a parameterized statement through parse/bind/execute, folding `Fun` over each row as
 it arrives. A halted fold cancels the query on the server; see `execute/4` for `Options`'
 `timeout` semantics.
+
+`Fun` receives the result's columns, the row's values in column order and the accumulator.
 """.
 -spec execute_fold(ClientRef, Statement, Parameters, Fun, Acc, Options) -> {ok, Metadata, Acc} | {error, Error} when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     Statement :: statement_text(),
     Parameters :: statement_parameters(),
     Fun :: execute_fold_fun(Acc),
     Options :: execute_fold_options(),
     Metadata :: result_metadata(),
     Error :: request_error().
--type execute_fold_fun(Acc) :: fun((pgc_connection:row_description(), [term() | null], Acc) -> {continue, Acc} | {halt, Acc}).
+-type execute_fold_fun(Acc) :: fun(([#{name := unicode:unicode_binary()}], [term() | null], Acc) -> {continue, Acc} | {halt, Acc}).
 -type execute_fold_options() :: #{
     timeout => timeout() | {abs, integer()},
     cache => execute_cache_options(),
@@ -209,7 +248,9 @@ it arrives. A halted fold cancels the query on the server; see `execute/4` for `
 execute_fold(ClientRef, StatementText, Parameters, Fun, Acc, Options) ->
     Request = {execute, StatementText, Parameters, maps:with([cache], Options)},
     RequestOptions = maps:without([cache], Options),
-    request(ClientRef, Request, RequestOptions, Fun, Acc).
+    request(ClientRef, Request, RequestOptions, fun (RowDescription, Values, FoldAcc) ->
+        Fun([#{name => Name} || #row_description_field{name = Name} <- RowDescription], Values, FoldAcc)
+    end, Acc).
 
 
 -doc """
@@ -217,10 +258,10 @@ Runs a parameterless statement as a simple query, bypassing parse/bind/execute.
 Used internally for `commit`, `rollback` and `start transaction`.
 """.
 -spec execute_simple(ClientRef, Statement) -> {ok, Metadata} | {error, Error} when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     Statement :: statement_text(),
     Metadata :: result_metadata(),
-    Error :: pgc_protocol_message:error_response_fields().
+    Error :: request_error().
 execute_simple(ClientRef, StatementText) ->
     Request = {query, StatementText},
     Fun = fun (_RowDescription, _Values, Acc) -> {continue, Acc} end,
@@ -242,7 +283,7 @@ mediates the wire and owns the (write side of the) type cache; the caller builds
 `pgc_client_codec:t()` from `Types` and this call's `codec` option (see `collect/7`).
 """.
 -spec request(ClientRef, Request, Options, Fun, Acc) -> {ok, result_metadata(), Acc} | {error, Error} when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     Request :: QueryRequest | ExecuteRequest,
     QueryRequest :: {query, statement_text()},
     ExecuteRequest :: {execute, statement_text(), statement_parameters(), ExecuteRequestOptions},
@@ -253,7 +294,25 @@ mediates the wire and owns the (write side of the) type cache; the caller builds
     },
     Fun :: fun((pgc_connection:row_description(), [term() | null], Acc) -> {continue, Acc} | {halt, Acc}),
     Error :: request_error().
--type request_error() :: pgc_protocol_message:error_response_fields().
+-type request_error() :: #{
+    severity := panic | fatal | error,
+    code := binary(),
+    message := unicode:unicode_binary(),
+    detail => unicode:unicode_binary(),
+    hint => unicode:unicode_binary(),
+    position => pos_integer(),
+    internal_position => pos_integer(),
+    internal_query => unicode:unicode_binary(),
+    where => [unicode:unicode_binary()],
+    schema => unicode:unicode_binary(),
+    table => unicode:unicode_binary(),
+    column => unicode:unicode_binary(),
+    data_type => unicode:unicode_binary(),
+    constraint => unicode:unicode_binary(),
+    file => unicode:unicode_binary(),
+    line => non_neg_integer(),
+    routine => unicode:unicode_binary()
+}.
 request(ClientRef, Request, Options, Fun, Acc) when is_pid(ClientRef) ->
     case Request of
         {execute, _, _, #{cache := {true, _}} = ExecuteOptions} ->
@@ -287,7 +346,7 @@ request(ClientRef, Request, Options, Fun, Acc) when is_pid(ClientRef) ->
 
 -doc false.
 -spec request_statem(ClientRef, RequestId, Parameters, Codec | CodecOptions, Deadline, Fun, Acc) -> {ok, result_metadata(), Acc} | {error, Error} when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     RequestId :: reference(),
     Parameters ::  [term()],
     Codec :: pgc_client_codec:t(),
@@ -362,7 +421,7 @@ decode_row(RowDescription, RowData, Codec) ->
     deferrable => boolean() | default
 }.
 -spec transaction(ClientRef, Fun, Options) -> Result when
-    ClientRef :: pgc_connection:connection_ref(),
+    ClientRef :: client_ref(),
     Fun :: fun(() -> {commit | rollback, Result}),
     Options :: transaction_options().
 transaction(ClientRef, Fun, Options) ->
@@ -444,7 +503,7 @@ open, then clears any session-level `set` it left behind. Meant to be called whe
 connection is handed back to a pool, between one caller and the next.
 """.
 -spec reset(ClientRef) -> ok when
-    ClientRef :: pgc_connection:connection_ref().
+    ClientRef :: client_ref().
 reset(ClientRef) ->
     {ok, _} = execute_simple(ClientRef, ~"rollback"),
     {ok, _} = execute_simple(ClientRef, ~"reset all"),
@@ -469,15 +528,7 @@ handle_call(_ConnectionInfo, Call, From, #state{} = State) ->
     {[{reply, From, {error, {unknown_call, Call}}}], State}.
 
 
--doc """
-Every request -- `execute`, `query`, and the internally-triggered `refresh` (see
-`handle_prepare_result/4`) -- goes through here. Only the *head* of `State#state.requests` is
-ever dispatched to the wire; everything else just sits there (`phase = queued`) until the head
-finishes, one way or another, and pops. That's the whole safety property this module leans on:
-since only one request is ever mid-flight, nothing ever decides whether a statement name is a
-cache hit from a `Statements` snapshot another, still in-flight request is already invalidating --
-by the time anything reads `Statements`, whatever was running before is already fully done.
-""".
+-doc false.
 handle_cast(ConnectionInfo, {request, FromPid, RequestId, {execute, StatementText, _StatementParameters, Options}}, State) ->
     process_request(ConnectionInfo, FromPid, RequestId, execute, statement_name(Options), StatementText, State);
 
@@ -491,6 +542,7 @@ handle_cast(ConnectionInfo, {cancel, RequestId}, State) ->
     process_cancel(ConnectionInfo, RequestId, State).
 
 
+-doc false.
 handle_info(ConnectionInfo, {{'DOWN', RequestId}, _MonitorRef, process, _Pid, _Reason}, #state{} = State) ->
     handle_cast(ConnectionInfo, {cancel, RequestId}, State).
 
@@ -674,20 +726,11 @@ handle_row_data(_ConnectionInfo, RequestId, RowDescription, RowData, State) ->
             {[], State}
     end.
 
--doc """
-`query` requests (the only ones running over the simple protocol -- `execute_simple/2`'s
-`commit`/`rollback`/`start transaction`/`reset all`) never have rows worth folding into anything
-beyond their own command tag, so this is just `handle_execute_result/4` under another name.
-""".
+-doc false.
 handle_query_result(ConnectionInfo, RequestId, Result, State) ->
     handle_execute_result(ConnectionInfo, RequestId, Result, State).
 
--doc """
-The terminal point for every request, whatever kind it is: `execute` and `query` reply to their
-caller and let the next one in line start; `refresh` has no caller to reply to (it's
-self-monitored, not alias-monitored, so sending to it would crash) -- it just lets the next one
-in line start, which is the paused request it was refreshing types for.
-""".
+-doc false.
 handle_execute_result(ConnectionInfo, RequestId, Result, State) ->
     #state{requests = Requests} = State,
     {value, #request{id = RequestId, kind = Kind, monitor = Monitor}} = queue:peek(Requests),

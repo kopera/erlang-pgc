@@ -49,7 +49,7 @@
 
 -spec start_link(SupervisorPid, PoolOptions) -> gen_server:start_ret() when
     SupervisorPid :: pid(),
-    PoolOptions :: pgc_pool:options().
+    PoolOptions :: pgc:pool_options().
 start_link(SupervisorPid, PoolOptions) ->
     Args = {SupervisorPid, PoolOptions},
     gen_server:start_link(?MODULE, Args, []).

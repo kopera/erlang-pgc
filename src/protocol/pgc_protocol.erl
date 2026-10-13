@@ -1,4 +1,5 @@
 -module(pgc_protocol).
+-moduledoc false.
 -export_type([
     oid/0
 ]).

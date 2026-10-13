@@ -1,4 +1,5 @@
 -module(pgc_pool).
+-moduledoc false.
 -export([
     start_link/2,
     start_link/3,
@@ -12,10 +13,7 @@
     with_client/3
 ]).
 -export_type([
-    options/0,
-    info/0,
-    pool_ref/0,
-    pool_name/0
+    info/0
 ]).
 
 -behaviour(supervisor).
@@ -24,7 +22,7 @@
 ]).
 
 
--spec start_link(pgc_client_options:t(), options()) -> {ok, pid()}.
+-spec start_link(pgc_client_options:t(), pgc:pool_options()) -> {ok, pid()}.
 start_link(ClientOptions, PoolOptions) ->
     {ok, _} = supervisor:start_link(?MODULE, {
         ClientOptions,
@@ -32,11 +30,7 @@ start_link(ClientOptions, PoolOptions) ->
     }).
 
 
--spec start_link(pool_name(), pgc_client_options:t(), options()) -> {ok, pid()}.
--type pool_name() :: supervisor:sup_name().
--type options() :: #{
-    max_size => pos_integer()
-}.
+-spec start_link(pgc:pool_name(), pgc_client_options:t(), pgc:pool_options()) -> {ok, pid()}.
 start_link(Name, ClientOptions, PoolOptions) ->
     {ok, _} = supervisor:start_link(Name, ?MODULE, {
         ClientOptions,
@@ -44,7 +38,7 @@ start_link(Name, ClientOptions, PoolOptions) ->
     }).
 
 
--spec child_spec(Id, pgc_client_options:t(), options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pgc_client_options:t(), pgc:pool_options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, ClientOptions, PoolOptions) ->
     #{
@@ -54,7 +48,7 @@ child_spec(Id, ClientOptions, PoolOptions) ->
     }.
 
 
--spec child_spec(Id, pool_name(), pgc_client_options:t(), options()) -> supervisor:child_spec() when
+-spec child_spec(Id, pgc:pool_name(), pgc_client_options:t(), pgc:pool_options()) -> supervisor:child_spec() when
     Id :: term().
 child_spec(Id, Name, ClientOptions, PoolOptions) ->
     #{
@@ -64,13 +58,13 @@ child_spec(Id, Name, ClientOptions, PoolOptions) ->
     }.
 
 
--spec stop(pool_ref()) -> ok.
+-spec stop(pgc:pool_ref()) -> ok.
 stop(PoolRef) ->
     supervisor:stop(PoolRef).
 
 
 -spec info(PoolRef) -> Info when
-    PoolRef :: pool_ref(),
+    PoolRef :: pgc:pool_ref(),
     Info :: info().
 -type info() :: #{
     available := non_neg_integer(),
@@ -85,14 +79,14 @@ info(PoolRef) ->
 
 
 -spec with_client(PoolRef, Action) -> Result when
-    PoolRef :: pool_ref(),
+    PoolRef :: pgc:pool_ref(),
     Action :: fun((Connection :: pid()) -> Result).
 with_client(PoolRef, Action) ->
     with_client(PoolRef, Action, #{}).
 
 
 -spec with_client(PoolRef, Action, Options) -> Result when
-    PoolRef :: pool_ref(),
+    PoolRef :: pgc:pool_ref(),
     Action :: fun((Connection :: pid()) -> Result),
     Options :: pgc_pool_manager:checkout_options().
 with_client(PoolRef, Action, Options) ->
@@ -119,8 +113,7 @@ with_client(PoolRef, Action, Options) ->
     end.
 
 
--spec manager_pid(pool_ref()) -> pid().
--type pool_ref() :: supervisor:sup_ref().
+-spec manager_pid(pgc:pool_ref()) -> pid().
 manager_pid(PoolRef) ->
     case supervisor:which_child(PoolRef, manager) of
         {ok, {_Id, ManagerPid, _Type, _Modules}} when is_pid(ManagerPid) -> ManagerPid
@@ -134,7 +127,7 @@ manager_pid(PoolRef) ->
 -doc false.
 -spec init({ClientOptions, PoolOptions}) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}} when
     ClientOptions :: pgc_client_options:t(),
-    PoolOptions :: options().
+    PoolOptions :: pgc:pool_options().
 init({ClientOptions, PoolOptions}) ->
     Supervisor = self(),
     Flags = #{strategy => one_for_all, auto_shutdown => any_significant},
