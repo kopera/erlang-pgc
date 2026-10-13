@@ -11,7 +11,7 @@ Add pgc to the dependencies in `rebar.config`:
 
 ```erlang
 {deps, [
-    {pgc, "0.1.0"}
+    pgc
 ]}.
 ```
 
