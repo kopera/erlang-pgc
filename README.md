@@ -23,7 +23,8 @@ Then add it to the `applications` of your `.app.src`.
 
 ```erlang
 {ok, ClientOptions} = pgc_client_options:from_uri(~"postgresql://postgres:postgres@localhost/postgres"),
-{ok, Pool} = pgc:start_link(ClientOptions, #{max_size => 10}),
+PoolOptions = #{max_size => 10},
+{ok, Pool} = pgc:start_link(ClientOptions, PoolOptions),
 {ok, #{command := ~"select", rows := 1}, [#{~"answer" := 42}]} =
     pgc:execute(Pool, {~"select $1::int4 as answer", [42]}).
 ```
